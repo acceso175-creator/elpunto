@@ -1,28 +1,24 @@
 # El Punto — Food To Go
 
-Portal MVP para tomar pedidos por WhatsApp, pensado para modificarse con Codex, subirse a GitHub y desplegarse en Netlify.
+Portal React/Vite para tomar pedidos por WhatsApp, administrar menú y conectar el menú principal con Supabase sin perder el fallback local.
 
 ## Qué incluye
 
-- Menú dividido en Desayunos, Birria y Bebidas.
-- Productos con ingredientes removibles.
-- Selección de cantidad y opciones por producto.
-- Carrito de pedido.
-- Pedido para recoger o a domicilio.
-- Captura de dirección y ubicación con navegador.
-- Mensaje automático a WhatsApp con número de orden, pedido, método de pago y ubicación.
-- Panel Admin en `/admin` para editar negocio, disponibilidad, productos, ingredientes e imágenes.
-- Imágenes de productos en Supabase Storage + metadatos en Supabase Database.
-- Club El Punto para datos rápidos de cliente frecuente.
+- Inicio, ubicación, menú con filtros, productos y carrito.
+- Ingredientes removibles por producto.
+- Pedido por WhatsApp con número de orden, método de pago, notas y ubicación.
+- Panel Admin en `/admin` para editar negocio, categorías, productos, disponibilidad, ingredientes e imágenes.
+- Supabase como base de datos principal para categorías, productos, ingredientes, imágenes y configuración del negocio.
+- `localStorage` como fallback cuando Supabase no está configurado o falla.
+- Supabase Storage para imágenes de productos mediante Netlify Functions.
 
-## Importante de seguridad
+## Seguridad importante
 
-Esta versión mantiene el menú y ajustes básicos en `localStorage`, pero las imágenes nuevas de productos **no** se guardan en base64 ni en `localStorage`: se suben a Supabase Storage desde una Netlify Function.
-
-- `VITE_SUPABASE_ANON_KEY` puede estar en el frontend solo si RLS no permite escrituras peligrosas.
+- `VITE_SUPABASE_ANON_KEY` puede vivir en frontend solo porque RLS bloquea escrituras públicas.
 - `SUPABASE_SERVICE_ROLE_KEY` va únicamente en Netlify Functions. Nunca la pongas en Vite ni en código del navegador.
-- No abras escritura pública al bucket `product-images`.
-- El PIN de Admin es un MVP; en producción reemplázalo con Supabase Auth y rol admin.
+- El admin escribe en Supabase mediante Netlify Functions y valida `ADMIN_PIN` como MVP.
+- En producción, reemplaza el PIN por Supabase Auth con rol admin.
+- No habilites escrituras públicas para tablas ni para Storage.
 
 ## Desarrollo local
 
@@ -37,18 +33,6 @@ npm run dev
 npm run build
 ```
 
-## Deploy en Netlify
-
-1. Sube este proyecto a GitHub.
-2. En Netlify, crea un sitio nuevo desde GitHub.
-3. Selecciona el repositorio.
-4. Build command: `npm run build`
-5. Publish directory: `dist`
-6. Configura las variables de entorno de Supabase y Admin listadas abajo.
-7. Deploy.
-
-El archivo `netlify.toml` ya trae el build y el redirect SPA para que `/admin` funcione al refrescar.
-
 ## Variables de entorno en Netlify
 
 Configura estas variables en **Site configuration → Environment variables**:
@@ -62,59 +46,86 @@ SUPABASE_STORAGE_BUCKET=product-images
 ADMIN_PIN=1234
 ```
 
-Opcionalmente puedes usar `ADMIN_UPLOAD_SECRET` para uploads si quieres separar el PIN visual del secreto de subida. Si existe, la función lo usa antes que `ADMIN_PIN`.
+`SUPABASE_SERVICE_ROLE_KEY` y `ADMIN_PIN` son privadas de Netlify Functions. No deben empezar con `VITE_`.
 
 ## Configuración de Supabase
 
 1. Crea un proyecto en Supabase.
-2. Ejecuta el SQL de `supabase/schema.sql` en el SQL Editor.
-3. Verifica que exista el bucket `product-images` en Storage.
-4. Mantén el bucket sin permisos de escritura pública. La subida y borrado se hacen por Netlify Function con `SUPABASE_SERVICE_ROLE_KEY`.
-5. Copia URL, anon key y service role key a Netlify.
+2. Abre el SQL Editor.
+3. Ejecuta completo el archivo `supabase/schema.sql`.
+4. Verifica que exista el bucket público de lectura `product-images` en Storage.
+5. Confirma que no existan políticas de escritura pública en tablas ni en `storage.objects`.
+6. Copia URL, anon key y service role key a Netlify.
+7. Deploy en Netlify.
+8. Entra a `/admin`, escribe el mismo `ADMIN_PIN` configurado en Netlify y prueba editar un producto.
+9. Sube imágenes desde el bloque de imágenes de cada producto.
+10. Revisa el menú público y confirma que los filtros, carrito y WhatsApp siguen funcionando.
 
-El SQL crea:
+## Qué crea `supabase/schema.sql`
 
+- `business_settings`
+- `categories`
 - `products`
 - `product_ingredients`
 - `product_images`
-- bucket recomendado `product-images`
-- políticas de lectura pública para productos/imágenes y sin escrituras públicas.
+- Triggers de `updated_at`
+- RLS activado
+- Políticas de lectura pública segura:
+  - categorías activas,
+  - productos disponibles,
+  - ingredientes e imágenes de productos disponibles,
+  - configuración del negocio.
+- Seed inicial:
+  - categorías `Desayunos`, `Birria`, `Bebidas`, `Postres`,
+  - productos actuales del menú,
+  - ingredientes actuales,
+  - configuración inicial del negocio.
+- Bucket `product-images` público para lectura.
 
-## Cómo subir imágenes desde Admin
+## Admin conectado a Supabase
+
+Las escrituras del admin usan estas Netlify Functions:
+
+- `netlify/functions/admin-products.js`
+- `netlify/functions/admin-categories.js`
+- `netlify/functions/admin-settings.js`
+- `netlify/functions/upload-product-image.js`
+
+El frontend solo usa `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY` para lectura pública. Las funciones usan `SUPABASE_SERVICE_ROLE_KEY` en servidor.
+
+## Subir imágenes
 
 1. Entra a `/admin`.
-2. Desbloquea el panel con el PIN configurado (`ADMIN_PIN`).
-3. En cada producto, abre el bloque **Imágenes Supabase**.
-4. Selecciona archivos desde el input de subida.
-5. Formatos aceptados: `image/png`, `image/jpeg`, `image/webp`.
-6. Tamaño máximo por imagen: 2 MB.
-7. Máximo 5 imágenes por producto.
-8. Al subir, la Netlify Function guarda el archivo en Supabase Storage y registra `image_url`, `storage_path`, `sort_order` y `product_id` en `product_images`.
-9. Para eliminar, usa el botón **Eliminar** en la preview: primero borra el registro y luego intenta borrar el archivo del bucket.
+2. Desbloquea con `ADMIN_PIN`.
+3. En cada producto, usa **Subir imágenes**.
+4. Formatos: `image/jpeg`, `image/png`, `image/webp`.
+5. Tamaño máximo: 2 MB por archivo.
+6. Máximo: 5 imágenes por producto.
+7. Al eliminar una imagen, se borra el registro en `product_images` y se intenta borrar el archivo del bucket.
 
-## Admin demo
+## Migración desde localStorage
 
-PIN local por defecto en el frontend: `1234`.
+Si el navegador tiene productos viejos en `localStorage`:
 
-Para deploy, configura `ADMIN_PIN` en Netlify con el mismo valor que usarás para desbloquear y subir imágenes. Cámbialo antes de producción.
+- Sin Supabase, el sitio sigue usando esos datos locales.
+- Con Supabase configurado, el menú público prefiere Supabase.
+- En `/admin` puedes usar **Migrar productos locales a Supabase**.
+- La migración evita duplicados por `nombre + categoría`.
 
-## Dónde editar el menú inicial
+## Cómo probar que Supabase ya está conectado
 
-Archivo:
+1. En Netlify, configura todas las variables.
+2. Ejecuta `supabase/schema.sql` en Supabase.
+3. Haz deploy.
+4. Abre el sitio público y revisa la consola: no debe aparecer el warning de fallback local.
+5. Entra a `/admin`, escribe `ADMIN_PIN`, cambia disponibilidad o precio de un producto y recarga.
+6. Confirma que el cambio permanece después de recargar y en otro navegador.
+7. Sube una imagen a un producto y confirma que aparece en el menú público.
+8. Agrega un producto al carrito y manda el pedido a WhatsApp para confirmar que el flujo no se rompió.
 
-```txt
-src/menuData.js
-```
+## Deploy en Netlify
 
-También se puede editar desde el panel Admin, pero esos cambios de menú quedan guardados en el navegador. Las imágenes se guardan en Supabase y se asocian al producto con un UUID interno estable (`supabaseProductId`).
+El archivo `netlify.toml` ya trae el build y redirect SPA para que `/admin` funcione al refrescar:
 
-## Siguiente mejora recomendada
-
-La siguiente versión debería migrar también productos, ingredientes, pedidos y admin a Supabase con Auth real para tener:
-
-- menú persistente real,
-- login de admin,
-- cuentas de cliente,
-- historial de pedidos,
-- métricas reales,
-- cupones/beneficios por usuario.
+- Build command: `npm run build`
+- Publish directory: `dist`

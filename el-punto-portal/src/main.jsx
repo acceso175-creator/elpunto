@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { businessDefaults, initialMenu } from './menuData.js';
 import { isSupabaseConfigured, listProductImages } from './lib/supabaseClient.js';
+import { getMenuData, normalizeMenuData } from './services/menuService.js';
 import './styles.css';
 
 const STORAGE = {
@@ -25,6 +26,47 @@ const PAYMENT_METHODS = [
 ];
 const BASE_CATEGORY_NAMES = ['Desayunos', 'Birria', 'Bebidas', 'Postres'];
 
+
+
+function mapBusinessSettings(row) {
+  if (!row) return businessDefaults;
+  return {
+    ...businessDefaults,
+    id: row.id,
+    name: row.business_name || businessDefaults.name,
+    subtitle: row.subtitle || businessDefaults.subtitle,
+    whatsapp: row.whatsapp_number || businessDefaults.whatsapp,
+    googleMapsUrl: row.google_maps_url || businessDefaults.googleMapsUrl,
+    cryptoBtcWallet: row.crypto_btc_wallet || '',
+    cryptoEthWallet: row.crypto_eth_wallet || '',
+    cryptoUsdtTrc20Wallet: row.crypto_usdt_trc20_wallet || '',
+    cryptoNote: row.crypto_note || '',
+    cryptoWallets: [
+      row.crypto_btc_wallet && `BTC: ${row.crypto_btc_wallet}`,
+      row.crypto_eth_wallet && `ETH: ${row.crypto_eth_wallet}`,
+      row.crypto_usdt_trc20_wallet && `USDT TRC20: ${row.crypto_usdt_trc20_wallet}`,
+      row.crypto_note
+    ].filter(Boolean)
+  };
+}
+
+async function adminRequest(functionName, { method = 'POST', pin, body = {} } = {}) {
+  const response = await fetch(`/.netlify/functions/${functionName}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(pin ? { 'x-admin-pin': pin } : {})
+    },
+    body: method === 'GET' ? undefined : JSON.stringify({ adminPin: pin, ...body })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'Error en función de Netlify.');
+  return result;
+}
+
+function menuFromAdminSnapshot(snapshot) {
+  return normalizeMenu(normalizeMenuData(snapshot.categories || [], snapshot.products || []));
+}
 
 function readStorage(key, fallback) {
   try {
@@ -227,10 +269,34 @@ function App() {
   const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : 'inicio');
   const [productImages, setProductImages] = useState({});
   const [productImagesError, setProductImagesError] = useState('');
+  const [dataSource, setDataSource] = useState(isSupabaseConfigured ? 'loading' : 'local');
 
   useEffect(() => {
     ensureSessionMetric();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSupabaseMenu() {
+      if (!isSupabaseConfigured) return;
+      const result = await getMenuData();
+      if (cancelled) return;
+      if (result.source === 'supabase') {
+        setMenu(normalizeMenu(result.menu));
+        setBusiness((current) => ({ ...current, ...result.business }));
+        const grouped = {};
+        result.menu.forEach((category) => {
+          category.items.forEach((item) => {
+            if (item.images?.length) grouped[item.supabaseProductId || item.id] = item.images;
+          });
+        });
+        setProductImages(grouped);
+      }
+      setDataSource(result.source);
+    }
+    loadSupabaseMenu();
+    return () => { cancelled = true; };
+  }, [setBusiness, setMenu]);
 
   const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + calculateLine(item) * item.quantity, 0), [cart]);
   const cartCount = useMemo(() => cart.reduce((sum, item) => sum + item.quantity, 0), [cart]);
@@ -292,7 +358,7 @@ function App() {
         <div className="admin-route__bar">
           <button className="button--ghost admin-exit" onClick={goHomeFromAdmin}>Salir del admin</button>
         </div>
-        <AdminSection menu={menu} setMenu={setMenu} business={business} setBusiness={setBusiness} productImages={productImages} refreshProductImages={refreshProductImages} productImagesError={productImagesError} />
+        <AdminSection menu={menu} setMenu={setMenu} business={business} setBusiness={setBusiness} productImages={productImages} refreshProductImages={refreshProductImages} productImagesError={productImagesError} dataSource={dataSource} setDataSource={setDataSource} />
       </main>
     );
   }
@@ -301,7 +367,7 @@ function App() {
     <main>
       <Header navigateTo={navigateTo} />
       <Hero navigateTo={navigateTo} />
-      <LocationSection />
+      <LocationSection business={business} />
       
       {activeSection === 'inicio' && <HomeImages />}
 
@@ -403,7 +469,8 @@ function Hero({ navigateTo }) {
 }
 
 
-function LocationSection() {
+function LocationSection({ business }) {
+  const mapsLink = business.googleMapsUrl || MAPS_LINK;
   return (
     <section id="ubicacion" className="section scroll-target">
       <div className="location-card">
@@ -412,7 +479,7 @@ function LocationSection() {
           <h2>Estamos aquí</h2>
           <p className="location-copy">Pasa por tu pedido o mándanos tu ubicación para entrega.</p>
           <div className="location-actions">
-            <a className="location-link location-link--primary" href={MAPS_LINK} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
+            <a className="location-link location-link--primary" href={mapsLink} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
           </div>
         </div>
         <div className="map-placeholder" aria-label="Mapa del local">
@@ -477,7 +544,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   const [quantity, setQuantity] = useState(1);
   const [removed, setRemoved] = useState([]);
   const [imageIndex, setImageIndex] = useState(0);
-  const imageUrls = images.map((image) => image.image_url);
+  const imageUrls = images.map((image) => image.image_url || image.imageUrl).filter(Boolean);
   const removableIngredients = removableIngredientNames(item.ingredients);
   const [selectedOptions, setSelectedOptions] = useState(() => {
     const options = {};
@@ -536,7 +603,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
         </div>
         {item.badge && <span className="badge">{item.badge}</span>}
       </div>
-      <strong className="price">{formatMoney(item.price)}</strong>
+      <strong className="price">{item.price ? formatMoney(item.price) : (item.priceLabel || 'Precio por confirmar')}</strong>
 
       {(item.options || []).length > 0 && (
         <div className="modifiers">
@@ -735,7 +802,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
           </div>
         )}
 
-        <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={MAPS_LINK} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
+        <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={business.googleMapsUrl || MAPS_LINK} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
 
         {orderType === 'domicilio' && (
           <div className="delivery-box">
@@ -798,7 +865,7 @@ function AccountSection({ profile, setProfile }) {
   );
 }
 
-function AdminSection({ menu, setMenu, business, setBusiness, productImages, refreshProductImages, productImagesError }) {
+function AdminSection({ menu, setMenu, business, setBusiness, productImages, refreshProductImages, productImagesError, dataSource, setDataSource }) {
   const [pin, setPin] = useState('');
   const [unlocked, setUnlocked] = useState(false);
   const [metrics, setMetrics] = useState(() => readStorage(STORAGE.metrics, defaultMetrics()));
@@ -809,6 +876,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   const adminCategories = categoryOptions(menu);
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonDraft, setJsonDraft] = useState(JSON.stringify(menu, null, 2));
+  const [adminStatus, setAdminStatus] = useState('');
 
   useEffect(() => {
     const refresh = () => setMetrics(readStorage(STORAGE.metrics, defaultMetrics()));
@@ -817,52 +885,143 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   }, []);
 
   function login() {
+    if (isSupabaseConfigured) {
+      if (!pin.trim()) return alert('Escribe el ADMIN_PIN configurado en Netlify.');
+      setUnlocked(true);
+      return;
+    }
     setUnlocked(pin === ADMIN_PIN);
-    if (pin !== ADMIN_PIN) alert('PIN incorrecto. En esta demo el PIN es 1234. Cámbialo cuando conectes backend.');
+    if (pin !== ADMIN_PIN) alert('PIN incorrecto. En modo local el PIN demo es 1234.');
+  }
+
+  async function reloadAdminMenu() {
+    if (!isSupabaseConfigured) return;
+    try {
+      const snapshot = await adminRequest('admin-products', { method: 'GET', pin });
+      setMenu(menuFromAdminSnapshot(snapshot));
+      setDataSource('supabase-admin');
+      setAdminStatus('Menú sincronizado con Supabase.');
+      await refreshProductImages();
+    } catch (error) {
+      setAdminStatus(error.message);
+    }
+  }
+
+  useEffect(() => {
+    if (unlocked && isSupabaseConfigured) reloadAdminMenu();
+  }, [unlocked]);
+
+  async function persistProduct(category, product, method = 'PATCH') {
+    if (!isSupabaseConfigured) return;
+    try {
+      const snapshot = await adminRequest('admin-products', { method, pin, body: { product, category } });
+      setMenu(menuFromAdminSnapshot(snapshot));
+      setDataSource('supabase-admin');
+      setAdminStatus('Cambio guardado en Supabase.');
+      await refreshProductImages();
+    } catch (error) {
+      setAdminStatus(error.message);
+    }
+  }
+
+  async function persistCategory(category, method = 'POST') {
+    if (!isSupabaseConfigured) return;
+    try {
+      const snapshot = await adminRequest('admin-categories', { method, pin, body: { category, id: category.supabaseCategoryId, slug: category.id, name: category.name } });
+      if (snapshot.categories) setMenu(menuFromAdminSnapshot(snapshot));
+      setAdminStatus('Categoría guardada en Supabase.');
+    } catch (error) {
+      setAdminStatus(error.message);
+    }
+  }
+
+  async function persistSettings(nextBusiness) {
+    if (!isSupabaseConfigured) return;
+    try {
+      const result = await adminRequest('admin-settings', { method: 'PATCH', pin, body: { settings: nextBusiness } });
+      if (result.settings) setBusiness((current) => ({ ...current, ...mapBusinessSettings(result.settings) }));
+      setAdminStatus('Configuración guardada en Supabase.');
+    } catch (error) {
+      setAdminStatus(error.message);
+    }
+  }
+
+  async function migrateLocalMenu() {
+    if (!isSupabaseConfigured) return alert('Configura Supabase antes de migrar.');
+    if (!confirm('¿Migrar productos locales a Supabase evitando duplicados por nombre/categoría?')) return;
+    try {
+      const snapshot = await adminRequest('admin-products', { method: 'POST', pin, body: { action: 'migrate', menu } });
+      setMenu(menuFromAdminSnapshot(snapshot));
+      setDataSource('supabase-admin');
+      setAdminStatus(`Migración completada: ${snapshot.count || 0} productos procesados.`);
+    } catch (error) {
+      setAdminStatus(error.message);
+    }
   }
 
   function updateItem(categoryId, itemId, patch) {
+    const category = menu.find((item) => item.id === categoryId);
+    const existing = category?.items.find((item) => item.id === itemId);
+    const updated = existing ? { ...existing, ...patch } : null;
     setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
       ...category,
       items: category.items.map((item) => item.id === itemId ? { ...item, ...patch } : item)
     }));
+    if (category && updated) persistProduct(category, updated);
   }
 
   function deleteItem(categoryId, itemId) {
+    const category = menu.find((item) => item.id === categoryId);
+    const product = category?.items.find((item) => item.id === itemId);
     setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
       ...category,
       items: category.items.filter((item) => item.id !== itemId)
     }));
+    if (isSupabaseConfigured && product) {
+      adminRequest('admin-products', { method: 'DELETE', pin, body: { id: product.supabaseProductId || product.id } })
+        .then((snapshot) => setMenu(menuFromAdminSnapshot(snapshot)))
+        .catch((error) => setAdminStatus(error.message));
+    }
   }
 
   function addCategoryByName(name) {
     const cleanName = String(name || '').trim();
     if (!cleanName) return '';
     const id = slugify(cleanName);
-    setMenu((current) => categoryExists(current, cleanName) ? current : [...current, createCategory(cleanName)]);
+    const category = createCategory(cleanName);
+    setMenu((current) => categoryExists(current, cleanName) ? current : [...current, category]);
+    persistCategory(category);
     return id;
   }
 
   function renameCategory(categoryId, name) {
     const cleanName = String(name || '').trim();
     if (!cleanName) return alert('Escribe un nombre de categoría.');
+    const existing = menu.find((category) => category.id === categoryId);
+    const renamed = existing ? { ...existing, id: slugify(cleanName), name: cleanName, description: existing.description || categoryDescription(cleanName) } : null;
     setMenu((current) => current.map((category) => category.id === categoryId ? {
       ...category,
+      id: slugify(cleanName),
       name: cleanName,
       description: category.description || categoryDescription(cleanName)
     } : category));
+    if (renamed) persistCategory(renamed, 'PATCH');
   }
 
   function deleteCategory(categoryId) {
     const category = menu.find((item) => item.id === categoryId);
     if (!category || category.items.length > 0) return alert('Solo puedes eliminar categorías sin productos asignados.');
     setMenu((current) => current.filter((item) => item.id !== categoryId));
+    if (isSupabaseConfigured) adminRequest('admin-categories', { method: 'DELETE', pin, body: { id: category.supabaseCategoryId, slug: category.id } }).catch((error) => setAdminStatus(error.message));
   }
 
   function moveItemToCategoryName(sourceCategoryId, itemId, name) {
     const cleanName = String(name || '').trim();
     if (!cleanName) return;
     const targetId = slugify(cleanName);
+    const sourceCategoryNow = menu.find((category) => category.id === sourceCategoryId);
+    const itemToPersist = sourceCategoryNow?.items.find((item) => item.id === itemId);
+    const targetCategoryNow = menu.find((category) => category.id === targetId || slugify(category.name) === targetId) || createCategory(cleanName);
     setMenu((current) => {
       const withCategory = categoryExists(current, cleanName) ? current : [...current, createCategory(cleanName)];
       const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
@@ -874,11 +1033,15 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         return category;
       });
     });
+    if (itemToPersist) persistProduct(targetCategoryNow, itemToPersist);
   }
 
   function moveItem(sourceCategoryId, itemId, targetCategoryId) {
     if (sourceCategoryId === targetCategoryId) return;
     const targetOption = adminCategories.find((category) => category.id === targetCategoryId);
+    const sourceCategoryNow = menu.find((category) => category.id === sourceCategoryId);
+    const itemToPersist = sourceCategoryNow?.items.find((item) => item.id === itemId);
+    const targetCategoryNow = menu.find((category) => category.id === targetCategoryId) || createCategory(targetOption?.name || targetCategoryId);
     setMenu((current) => {
       const withCategory = current.some((category) => category.id === targetCategoryId)
         ? current
@@ -896,9 +1059,16 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         return category;
       });
     });
+    if (itemToPersist) persistProduct(targetCategoryNow, itemToPersist);
   }
 
   function updateIngredient(categoryId, itemId, ingredientIndex, patch) {
+    const category = menu.find((item) => item.id === categoryId);
+    const existing = category?.items.find((item) => item.id === itemId);
+    const updated = existing ? {
+      ...existing,
+      ingredients: normalizeIngredients(existing.ingredients).map((ingredient, index) => index === ingredientIndex ? { ...ingredient, ...patch } : ingredient)
+    } : null;
     setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
       ...category,
       items: category.items.map((item) => item.id !== itemId ? item : {
@@ -906,9 +1076,13 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         ingredients: normalizeIngredients(item.ingredients).map((ingredient, index) => index === ingredientIndex ? { ...ingredient, ...patch } : ingredient)
       })
     }));
+    if (category && updated) persistProduct(category, updated);
   }
 
   function addIngredient(categoryId, itemId) {
+    const category = menu.find((item) => item.id === categoryId);
+    const existing = category?.items.find((item) => item.id === itemId);
+    const updated = existing ? { ...existing, ingredients: [...normalizeIngredients(existing.ingredients), { name: '', removable: true }] } : null;
     setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
       ...category,
       items: category.items.map((item) => item.id !== itemId ? item : {
@@ -916,9 +1090,13 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         ingredients: [...normalizeIngredients(item.ingredients), { name: '', removable: true }]
       })
     }));
+    if (category && updated) persistProduct(category, updated);
   }
 
   function deleteIngredient(categoryId, itemId, ingredientIndex) {
+    const category = menu.find((item) => item.id === categoryId);
+    const existing = category?.items.find((item) => item.id === itemId);
+    const updated = existing ? { ...existing, ingredients: normalizeIngredients(existing.ingredients).filter((_, index) => index !== ingredientIndex) } : null;
     setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
       ...category,
       items: category.items.map((item) => item.id !== itemId ? item : {
@@ -926,6 +1104,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         ingredients: normalizeIngredients(item.ingredients).filter((_, index) => index !== ingredientIndex)
       })
     }));
+    if (category && updated) persistProduct(category, updated);
   }
 
   function addProduct() {
@@ -944,14 +1123,16 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const targetName = newProduct.categoryName.trim();
     const selectedCategory = adminCategories.find((category) => category.id === newProduct.categoryId);
     const targetId = targetName ? slugify(targetName) : newProduct.categoryId;
+    const targetCategory = menu.find((category) => category.id === targetId) || createCategory(targetName || selectedCategory?.name || targetId);
     setMenu((current) => {
       const needsCategory = !current.some((category) => category.id === targetId);
-      const withCategory = needsCategory ? [...current, createCategory(targetName || selectedCategory?.name || targetId)] : current;
+      const withCategory = needsCategory ? [...current, targetCategory] : current;
       return withCategory.map((category) => category.id !== targetId ? category : {
         ...category,
         items: [...category.items, product]
       });
     });
+    persistProduct(targetCategory, product, 'POST');
     setNewProduct({ ...newProduct, categoryName: '', name: '', price: '', description: '', ingredients: '' });
   }
 
@@ -1013,6 +1194,28 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
             Ubicación base
             <input value={business.address} onChange={(event) => setBusiness({ ...business, address: event.target.value })} />
           </label>
+          <label>
+            Link Google Maps
+            <input value={business.googleMapsUrl || ''} onChange={(event) => setBusiness({ ...business, googleMapsUrl: event.target.value })} placeholder="https://maps.app.goo.gl/..." />
+          </label>
+          <label>
+            Wallet BTC (opcional)
+            <input value={business.cryptoBtcWallet || ''} onChange={(event) => setBusiness({ ...business, cryptoBtcWallet: event.target.value })} />
+          </label>
+          <label>
+            Wallet ETH (opcional)
+            <input value={business.cryptoEthWallet || ''} onChange={(event) => setBusiness({ ...business, cryptoEthWallet: event.target.value })} />
+          </label>
+          <label>
+            Wallet USDT TRC20 (opcional)
+            <input value={business.cryptoUsdtTrc20Wallet || ''} onChange={(event) => setBusiness({ ...business, cryptoUsdtTrc20Wallet: event.target.value })} />
+          </label>
+          <label>
+            Nota cripto (opcional)
+            <input value={business.cryptoNote || ''} onChange={(event) => setBusiness({ ...business, cryptoNote: event.target.value })} />
+          </label>
+          <button type="button" className="button--ghost" onClick={() => persistSettings(business)}>Guardar configuración en Supabase</button>
+          <p className="small-note">Fuente actual: {dataSource}. {adminStatus}</p>
         </div>
       </div>
 
@@ -1062,6 +1265,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
             <h2>Menú editable</h2>
           </div>
           <div className="admin-actions">
+            <button className="button--ghost" onClick={reloadAdminMenu}>Recargar Supabase</button>
+            <button className="button--ghost" onClick={migrateLocalMenu}>Migrar productos locales a Supabase</button>
             <button className="button--ghost" onClick={() => { setJsonDraft(JSON.stringify(menu, null, 2)); setJsonMode(!jsonMode); }}>{jsonMode ? 'Vista normal' : 'Editar JSON'}</button>
             <button className="button--danger" onClick={resetMenu}>Reset menú</button>
           </div>

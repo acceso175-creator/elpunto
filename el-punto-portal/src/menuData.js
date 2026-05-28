@@ -1,8 +1,14 @@
 export const businessDefaults = {
   name: 'El Punto',
-  subtitle: 'Desayunos To Go',
+  subtitle: 'Food To Go',
   whatsapp: '526140000000',
+  googleMapsUrl: 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7',
   address: 'Centro, Chihuahua, Chih.',
+  cryptoBtcWallet: '',
+  cryptoEthWallet: '',
+  cryptoUsdtTrc20Wallet: '',
+  cryptoNote: '',
+  cryptoWallets: [],
   hours: 'Lunes a domingo · horario por definir',
   deliveryNote: 'Servicio para recoger o a domicilio. Confirma disponibilidad por WhatsApp.'
 };
