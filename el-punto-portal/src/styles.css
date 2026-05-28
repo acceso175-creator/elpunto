@@ -978,3 +978,99 @@ input, select, textarea { max-width: 100%; }
   .site-header__cta { padding-inline: 0.75rem; }
   .site-nav__link { font-size: 0.82rem; }
 }
+
+/* Header rebalance: compact logo, truly centered nav, CTA on the right. */
+.site-header {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) 180px;
+  align-items: center;
+  column-gap: clamp(0.75rem, 2vw, 1.4rem);
+  min-height: 76px;
+  padding: 0.5rem clamp(0.9rem, 2vw, 1.35rem);
+}
+
+.brand-mini {
+  justify-self: start;
+  width: 150px;
+  min-width: 0;
+  height: 52px;
+  overflow: hidden;
+  padding: 0.25rem 0.45rem;
+  border-radius: 14px;
+  background: rgba(18, 20, 22, 0.9);
+  box-shadow: none;
+}
+
+.brand-mini img {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
+  object-position: center;
+  transform: scale(2.15);
+}
+
+.site-nav {
+  justify-self: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 720px;
+  overflow: visible;
+}
+
+.site-header__cta {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+main { padding-top: 82px; }
+.scroll-target { scroll-margin-top: 100px; }
+
+@media (max-width: 1100px) {
+  .site-header { grid-template-columns: 154px minmax(0, 1fr) 154px; }
+  .brand-mini { width: 136px; }
+  .site-nav { justify-content: center; gap: 0.32rem; }
+  .site-nav__link { padding-inline: 0.68rem; font-size: 0.86rem; }
+  .site-header__cta { padding-inline: 0.95rem; }
+}
+
+@media (max-width: 860px) {
+  main { padding-top: 132px; }
+  .site-header {
+    grid-template-columns: auto auto;
+    row-gap: 0.45rem;
+    column-gap: 0.75rem;
+    min-height: 126px;
+    padding: 0.45rem 0.75rem 0.55rem;
+  }
+  .brand-mini { width: 130px; height: 50px; }
+  .brand-mini img { transform: scale(2.1); }
+  .site-header__cta { justify-self: end; min-height: 44px; }
+  .site-nav {
+    grid-column: 1 / -1;
+    max-width: none;
+    justify-self: stretch;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: 0.05rem;
+  }
+  .site-nav__link { padding: 0.55rem 0.78rem; }
+  .scroll-target { scroll-margin-top: 150px; }
+}
+
+@media (max-width: 560px) {
+  main { padding-top: 130px; }
+  .site-header { min-height: 124px; padding-inline: 0.6rem; }
+  .brand-mini { width: 116px; height: 46px; }
+  .brand-mini img { transform: scale(2.05); }
+  .site-header__cta { padding: 0.7rem 0.85rem; font-size: 0.86rem; }
+  .site-nav__link { padding: 0.5rem 0.7rem; font-size: 0.82rem; }
+  .hero { padding-top: 0.65rem; }
+  .floating-cart { max-width: 112px; }
+  .scroll-target { scroll-margin-top: 148px; }
+}
+
+@media (max-width: 360px) {
+  .brand-mini { width: 106px; }
+  .site-header__cta { padding-inline: 0.68rem; }
+}
