@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { businessDefaults, initialMenu } from './menuData.js';
+import { isSupabaseConfigured, listProductImages } from './lib/supabaseClient.js';
 import './styles.css';
 
 const STORAGE = {
@@ -14,6 +15,16 @@ const STORAGE = {
 
 const ADMIN_PIN = '1234';
 const MAPS_LINK = 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7';
+const identity = (value) => value;
+const PAYMENT_METHODS = [
+  { value: 'efectivo', label: 'Efectivo' },
+  { value: 'tarjeta', label: 'Tarjeta' },
+  { value: 'transferencia', label: 'Transferencia' },
+  { value: 'pago_en_linea', label: 'Pago en línea' },
+  { value: 'criptomonedas', label: 'Criptomonedas' }
+];
+const BASE_CATEGORY_NAMES = ['Desayunos', 'Birria', 'Bebidas', 'Postres'];
+
 
 function readStorage(key, fallback) {
   try {
@@ -28,15 +39,127 @@ function writeStorage(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
-function usePersistedState(key, fallback) {
-  const [state, setState] = useState(() => readStorage(key, fallback));
-  useEffect(() => writeStorage(key, state), [key, state]);
+function splitCsv(value) {
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function categoryDescription(name) {
+  const known = {
+    desayunos: 'Clásicos para arrancar el día.',
+    birria: 'Opciones con cebolla, cilantro, limón y salsa.',
+    bebidas: 'Café, jugos, malteadas y smoothies.',
+    postres: 'Algo dulce para cerrar tu pedido.'
+  };
+  return known[slugify(name)] || 'Categoría editable desde Admin.';
+}
+
+function createCategory(name) {
+  const cleanName = String(name || '').trim();
+  return {
+    id: slugify(cleanName) || `categoria-${Date.now()}`,
+    name: cleanName || 'Nueva categoría',
+    description: categoryDescription(cleanName),
+    items: []
+  };
+}
+
+function categoryExists(menu, name) {
+  const id = slugify(name);
+  return menu.some((category) => category.id === id || slugify(category.name) === id);
+}
+
+function categoryOptions(menu) {
+  const byId = new Map();
+  BASE_CATEGORY_NAMES.forEach((name) => {
+    const category = menu.find((item) => slugify(item.name) === slugify(name) || item.id === slugify(name));
+    byId.set(slugify(name), category || createCategory(name));
+  });
+  menu.forEach((category) => byId.set(category.id || slugify(category.name), category));
+  return [...byId.values()];
+}
+
+function normalizeIngredients(ingredients) {
+  if (!Array.isArray(ingredients)) return [];
+  return ingredients
+    .map((ingredient) => {
+      if (typeof ingredient === 'string') {
+        return { name: ingredient, removable: true };
+      }
+      return {
+        name: String(ingredient?.name || '').trim(),
+        removable: ingredient?.removable !== false
+      };
+    })
+    .filter((ingredient) => ingredient.name);
+}
+
+function normalizeMenu(menu) {
+  if (!Array.isArray(menu)) return normalizeMenu(initialMenu);
+  return menu.map((category) => ({
+    ...category,
+    id: category.id || slugify(category.name),
+    name: category.name || 'Categoría',
+    description: category.description || categoryDescription(category.name),
+    items: (category.items || []).map((item) => ({
+      ...item,
+      supabaseProductId: isUuid(item.supabaseProductId) ? item.supabaseProductId : (isUuid(item.id) ? item.id : createStableUuid()),
+      images: Array.isArray(item.images) ? item.images.filter((image) => typeof image === 'string' && !image.startsWith('data:')) : [],
+      ingredients: normalizeIngredients(item.ingredients)
+    }))
+  }));
+}
+
+function removableIngredientNames(ingredients) {
+  return normalizeIngredients(ingredients)
+    .filter((ingredient) => ingredient.removable)
+    .map((ingredient) => ingredient.name);
+}
+
+function usePersistedState(key, fallback, normalize = identity) {
+  const [state, setState] = useState(() => normalize(readStorage(key, fallback)));
+  useEffect(() => writeStorage(key, normalize(state)), [key, normalize, state]);
   return [state, setState];
 }
 
 function formatMoney(value) {
   if (!value) return 'Precio por confirmar';
   return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value);
+}
+
+function paymentLabel(value) {
+  return PAYMENT_METHODS.find((method) => method.value === value)?.label || 'Efectivo';
+}
+
+function cryptoWalletsFromBusiness(business) {
+  if (Array.isArray(business.cryptoWallets)) return business.cryptoWallets.filter(Boolean);
+  return String(business.cryptoWallets || '')
+    .split('\n')
+    .map((wallet) => wallet.trim())
+    .filter(Boolean);
+}
+
+function clearAdminSession() {
+  const keys = ['adminAuthenticated', 'adminPin', 'isAdmin', 'adminSession'];
+  keys.forEach((key) => {
+    localStorage.removeItem(key);
+    sessionStorage.removeItem(key);
+  });
+}
+
+function goHomeFromAdmin() {
+  clearAdminSession();
+  window.location.assign('/');
+}
+
+function createStableUuid() {
+  return crypto.randomUUID ? crypto.randomUUID() : `00000000-0000-4000-8000-${String(Date.now()).slice(-12).padStart(12, '0')}`;
+}
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
 }
 
 function slugify(text) {
@@ -96,17 +219,22 @@ function createOrderNumber() {
 }
 
 function App() {
-  const [menu, setMenu] = usePersistedState(STORAGE.menu, initialMenu);
+  const [menu, setMenu] = usePersistedState(STORAGE.menu, normalizeMenu(initialMenu), normalizeMenu);
   const [business, setBusiness] = usePersistedState(STORAGE.business, businessDefaults);
   const [cart, setCart] = usePersistedState(STORAGE.cart, []);
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
-  const [activeSection, setActiveSection] = useState('inicio');
+  const isAdminPath = window.location.pathname === '/admin';
+  const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : 'inicio');
+  const [productImages, setProductImages] = useState({});
+  const [productImagesError, setProductImagesError] = useState('');
 
   useEffect(() => {
     ensureSessionMetric();
   }, []);
 
   const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + calculateLine(item) * item.quantity, 0), [cart]);
+  const cartCount = useMemo(() => cart.reduce((sum, item) => sum + item.quantity, 0), [cart]);
+  const supabaseProductIds = useMemo(() => menu.flatMap((category) => category.items.map((item) => item.supabaseProductId || item.id).filter(Boolean)), [menu]);
 
   function addToCart(payload) {
     setCart((current) => [...current, { ...payload, cartId: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}` }]);
@@ -121,17 +249,64 @@ function App() {
     setCart([]);
   }
 
+  async function refreshProductImages() {
+    if (!isSupabaseConfigured || !supabaseProductIds.length) {
+      setProductImages({});
+      return;
+    }
+    try {
+      const records = await listProductImages(supabaseProductIds);
+      const grouped = records.reduce((acc, image) => {
+        acc[image.product_id] = [...(acc[image.product_id] || []), image];
+        return acc;
+      }, {});
+      setProductImages(grouped);
+      setProductImagesError('');
+    } catch (error) {
+      setProductImagesError(error.message);
+    }
+  }
+
+  useEffect(() => {
+    refreshProductImages();
+  }, [supabaseProductIds.join('|')]);
+
+  function navigateTo(section) {
+    if (isAdminPath) return;
+    const sectionIds = {
+      inicio: 'inicio',
+      ubicacion: 'ubicacion',
+      menu: 'menu',
+      pedido: 'pedido',
+      cuenta: 'club-el-punto'
+    };
+    setActiveSection(section === 'ubicacion' ? 'inicio' : section);
+    window.setTimeout(() => {
+      document.getElementById(sectionIds[section] || section)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }
+
+  if (isAdminPath) {
+    return (
+      <main className="admin-route">
+        <div className="admin-route__bar">
+          <button className="button--ghost admin-exit" onClick={goHomeFromAdmin}>Salir del admin</button>
+        </div>
+        <AdminSection menu={menu} setMenu={setMenu} business={business} setBusiness={setBusiness} productImages={productImages} refreshProductImages={refreshProductImages} productImagesError={productImagesError} />
+      </main>
+    );
+  }
+
   return (
     <main>
-      <Header business={business} setActiveSection={setActiveSection} />
-      <Hero business={business} setActiveSection={setActiveSection} cartCount={cart.length} />
+      <Header navigateTo={navigateTo} />
+      <Hero navigateTo={navigateTo} />
       <LocationSection />
-      <Navigation activeSection={activeSection} setActiveSection={setActiveSection} />
-
+      
       {activeSection === 'inicio' && <HomeImages />}
 
       {activeSection === 'menu' && (
-        <MenuSection menu={menu} addToCart={addToCart} />
+        <MenuSection menu={menu} addToCart={addToCart} productImages={productImages} />
       )}
 
       {activeSection === 'pedido' && (
@@ -150,46 +325,32 @@ function App() {
         <AccountSection profile={profile} setProfile={setProfile} />
       )}
 
-      {activeSection === 'admin' && (
-        <AdminSection
-          menu={menu}
-          setMenu={setMenu}
-          business={business}
-          setBusiness={setBusiness}
-        />
-      )}
 
       <Footer business={business} />
+      <FloatingCart cartCount={cartCount} cartTotal={cartTotal} navigateTo={navigateTo} />
     </main>
   );
 }
 
 
-function Header({ business, setActiveSection }) {
+function Header({ navigateTo }) {
   const [logoError, setLogoError] = useState(false);
   const links = [
     ['inicio', 'Inicio'],
     ['ubicacion', 'Ubicación'],
     ['menu', 'Menú'],
     ['pedido', 'Pedido'],
-    ['cuenta', 'Beneficios'],
-    ['admin', 'Admin']
+    ['cuenta', 'Club El Punto']
   ];
 
   function handleHeaderNav(target) {
-    if (target === 'ubicacion') {
-      setActiveSection('inicio');
-      setTimeout(() => {
-        document.getElementById('ubicacion')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 0);
-      return;
-    }
-    setActiveSection(target);
+    navigateTo(target);
   }
+
 
   return (
     <header className="site-header">
-      <button className="brand-mini" onClick={() => setActiveSection('inicio')}>
+      <button className="brand-mini" onClick={() => navigateTo('inicio')}>
         {!logoError ? <img src="/images/logo-el-punto.png" alt="Logo El Punto" onError={() => setLogoError(true)} /> : <span>El Punto</span>}
       </button>
       <nav className="site-nav">
@@ -197,7 +358,7 @@ function Header({ business, setActiveSection }) {
           <button key={id} className="site-nav__link" onClick={() => handleHeaderNav(id)}>{label}</button>
         ))}
       </nav>
-      <button className="site-header__cta" onClick={() => setActiveSection('pedido')}>Ordenar por WhatsApp</button>
+      <button className="site-header__cta" onClick={() => navigateTo('menu')}>Hacer pedido</button>
     </header>
   );
 }
@@ -218,26 +379,16 @@ function HomeImages() {
   );
 }
 
-function Hero({ business, setActiveSection, cartCount }) {
-  const [logoError, setLogoError] = useState(false);
-
+function Hero({ navigateTo }) {
   return (
-    <section className="hero">
+    <section id="inicio" className="hero scroll-target">
       <div className="hero__content">
         <p className="eyebrow">Centro de Chihuahua · para llevar</p>
-        <div className="brand-lockup">
-          {!logoError ? (
-            <img src="/images/logo-el-punto.png" alt="Logo El Punto" className="brand-logo" onError={() => setLogoError(true)} />
-          ) : (
-            <h1>{business.name}<span>.</span></h1>
-          )}
-          <div className="brand-line" aria-hidden="true" />
-        </div>
+        <h1>El Punto<span>.</span></h1>
         <p className="subtitle">Food To Go</p>
         <p className="hero__copy">Desayunos, comida rápida y antojos listos para llevar.</p>
         <div className="hero__actions">
-          <button onClick={() => setActiveSection('menu')}>Ver menú</button>
-          <button className="button--ghost" onClick={() => setActiveSection('pedido')}>Ordenar por WhatsApp ({cartCount})</button>
+          <button onClick={() => navigateTo('menu')}>Ver menú</button>
         </div>
       </div>
       <div className="hero__card">
@@ -254,7 +405,7 @@ function Hero({ business, setActiveSection, cartCount }) {
 
 function LocationSection() {
   return (
-    <section id="ubicacion" className="section">
+    <section id="ubicacion" className="section scroll-target">
       <div className="location-card">
         <div>
           <p className="eyebrow">Ubicación</p>
@@ -262,7 +413,6 @@ function LocationSection() {
           <p className="location-copy">Pasa por tu pedido o mándanos tu ubicación para entrega.</p>
           <div className="location-actions">
             <a className="location-link location-link--primary" href={MAPS_LINK} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
-            <a className="location-link location-link--ghost" href={MAPS_LINK} target="_blank" rel="noreferrer">Ordenar por WhatsApp</a>
           </div>
         </div>
         <div className="map-placeholder" aria-label="Mapa del local">
@@ -275,36 +425,38 @@ function LocationSection() {
   );
 }
 
-function Navigation({ activeSection, setActiveSection }) {
-  const items = [
-    ['inicio', 'Inicio'],
-    ['menu', 'Menú'],
-    ['pedido', 'Pedido'],
-    ['cuenta', 'Cuenta / beneficios'],
-    ['admin', 'Admin']
-  ];
+function MenuSection({ menu, addToCart, productImages }) {
+  const [activeCategory, setActiveCategory] = useState('todo');
+  const visibleCategories = menu.filter((category) => (category.items || []).length > 0);
+  const filteredCategories = activeCategory === 'todo'
+    ? visibleCategories
+    : visibleCategories.filter((category) => category.id === activeCategory);
+  const filters = [{ id: 'todo', name: 'Todo' }, ...visibleCategories.map((category) => ({ id: category.id, name: category.name }))];
 
   return (
-    <nav className="tabs">
-      {items.map(([id, label]) => (
-        <button key={id} className={activeSection === id ? 'active' : ''} onClick={() => setActiveSection(id)}>
-          {label}
-        </button>
-      ))}
-    </nav>
-  );
-}
-
-function MenuSection({ menu, addToCart }) {
-  return (
-    <section className="section">
+    <section id="menu" className="section scroll-target">
       <div className="section__heading">
         <p className="eyebrow">Menú</p>
         <h2>Arma tu pedido</h2>
-        <p>Todos los productos permiten quitar ingredientes y seleccionar cantidad. Los precios están listos para que los captures desde Admin.</p>
+        <p>Elige tus productos, ajusta ingredientes y manda tu pedido directo por WhatsApp.</p>
       </div>
 
-      {menu.map((category) => (
+      <div className="category-filter" aria-label="Filtros de categorías">
+        {filters.map((filter) => (
+          <button
+            key={filter.id}
+            type="button"
+            className={activeCategory === filter.id ? 'category-filter__chip active' : 'category-filter__chip'}
+            onClick={() => setActiveCategory(filter.id)}
+          >
+            {filter.name}
+          </button>
+        ))}
+      </div>
+
+      {filteredCategories.length === 0 ? (
+        <p className="empty">Todavía no hay productos en esta categoría.</p>
+      ) : filteredCategories.map((category) => (
         <div key={category.id} className="category">
           <div className="category__title">
             <h3>{category.name}</h3>
@@ -312,7 +464,7 @@ function MenuSection({ menu, addToCart }) {
           </div>
           <div className="grid">
             {category.items.map((item) => (
-              <ProductCard key={item.id} item={item} categoryId={category.id} addToCart={addToCart} />
+              <ProductCard key={item.id} item={item} categoryId={category.id} addToCart={addToCart} images={productImages[item.supabaseProductId || item.id] || []} />
             ))}
           </div>
         </div>
@@ -321,9 +473,12 @@ function MenuSection({ menu, addToCart }) {
   );
 }
 
-function ProductCard({ item, categoryId, addToCart }) {
+function ProductCard({ item, categoryId, addToCart, images }) {
   const [quantity, setQuantity] = useState(1);
   const [removed, setRemoved] = useState([]);
+  const [imageIndex, setImageIndex] = useState(0);
+  const imageUrls = images.map((image) => image.image_url);
+  const removableIngredients = removableIngredientNames(item.ingredients);
   const [selectedOptions, setSelectedOptions] = useState(() => {
     const options = {};
     (item.options || []).forEach((option) => {
@@ -331,6 +486,10 @@ function ProductCard({ item, categoryId, addToCart }) {
     });
     return options;
   });
+
+  useEffect(() => {
+    if (imageIndex >= imageUrls.length) setImageIndex(0);
+  }, [imageIndex, imageUrls.length]);
 
   function toggleIngredient(ingredient) {
     setRemoved((current) => current.includes(ingredient)
@@ -354,6 +513,22 @@ function ProductCard({ item, categoryId, addToCart }) {
 
   return (
     <article className={`product ${!item.available ? 'product--disabled' : ''}`}>
+      <div className="product-media">
+        {imageUrls.length > 0 ? (
+          <>
+            <img src={imageUrls[imageIndex]} alt={item.name} className="product-media__image" />
+            {imageUrls.length > 1 && (
+              <div className="product-media__controls">
+                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex - 1 + imageUrls.length) % imageUrls.length)}>‹</button>
+                <span>{imageIndex + 1}/{imageUrls.length}</span>
+                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex + 1) % imageUrls.length)}>›</button>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="product-media__placeholder">Imagen del producto</div>
+        )}
+      </div>
       <div className="product__top">
         <div>
           <h4>{item.name}</h4>
@@ -379,10 +554,10 @@ function ProductCard({ item, categoryId, addToCart }) {
         </div>
       )}
 
-      <div className="ingredients">
+      {removableIngredients.length > 0 && <div className="ingredients">
         <p>Quitar ingredientes:</p>
         <div>
-          {(item.ingredients || []).map((ingredient) => (
+          {removableIngredients.map((ingredient) => (
             <button
               type="button"
               key={ingredient}
@@ -393,7 +568,7 @@ function ProductCard({ item, categoryId, addToCart }) {
             </button>
           ))}
         </div>
-      </div>
+      </div>}
 
       <div className="product__actions">
         <label className="qty">
@@ -408,11 +583,14 @@ function ProductCard({ item, categoryId, addToCart }) {
 
 function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, profile, setProfile }) {
   const [orderType, setOrderType] = useState('recoger');
-  const [payment, setPayment] = useState('Efectivo');
+  const [payment, setPayment] = useState('efectivo');
   const [address, setAddress] = useState('');
   const [geoLink, setGeoLink] = useState('');
   const [notes, setNotes] = useState('');
   const [isLocating, setIsLocating] = useState(false);
+  const selectedPaymentLabel = paymentLabel(payment);
+  const isOnlinePaymentReady = Boolean(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY) && cartTotal > 0;
+  const cryptoWallets = cryptoWalletsFromBusiness(business);
 
   function getLocation() {
     if (!navigator.geolocation) {
@@ -440,7 +618,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
       const opts = Object.entries(item.selectedOptions || {})
         .map(([key, value]) => `${key}: ${value}`)
         .join(', ');
-      const removed = item.removedIngredients?.length ? ` | Quitar: ${item.removedIngredients.join(', ')}` : '';
+      const removed = item.removedIngredients?.length ? ` | Sin: ${item.removedIngredients.join(', ')}` : '';
       const linePrice = calculateLine(item) * item.quantity;
       const priceText = linePrice ? ` | Subtotal: ${formatMoney(linePrice)}` : '';
       return `${index + 1}. ${item.quantity} x ${item.name}${opts ? ` (${opts})` : ''}${removed}${priceText}`;
@@ -451,8 +629,13 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
       : '';
 
     const totalText = cartTotal ? formatMoney(cartTotal) : 'Por confirmar';
+    const paymentNote = payment === 'pago_en_linea'
+      ? '\nPago en línea seleccionado. Pendiente de confirmación.'
+      : payment === 'criptomonedas'
+        ? '\nPago con criptomonedas seleccionado. Solicito datos de pago.'
+        : '';
 
-    return `Hola, quiero hacer un pedido en El Punto.\n\nOrden: ${orderNumber}\nNombre: ${profile.name || 'Cliente'}\nTeléfono: ${profile.phone || 'No capturado'}\nMétodo de pago: ${payment}\n${orderType === 'domicilio' ? 'Tipo: A domicilio' : 'Tipo: Para recoger'}${locationText}\n\nPedido:\n${items}\n\nTotal estimado: ${totalText}\nNotas: ${notes || 'Sin notas'}\n\nPor favor confírmenme disponibilidad y tiempo estimado.`;
+    return `Hola, quiero hacer un pedido en El Punto.\n\nOrden: ${orderNumber}\nNombre: ${profile.name || 'Cliente'}\nTeléfono: ${profile.phone || 'No capturado'}\nMétodo de pago: ${selectedPaymentLabel}${paymentNote}\n${orderType === 'domicilio' ? 'Tipo: A domicilio' : 'Tipo: Para recoger'}${locationText}\n\nPedido:\n${items}\n\nTotal estimado: ${totalText}\nNotas: ${notes || 'Sin notas'}\n\nPor favor confírmenme disponibilidad y tiempo estimado.`;
   }
 
   function sendWhatsApp() {
@@ -471,7 +654,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
   }
 
   return (
-    <section className="section order-layout">
+    <section id="pedido" className="section order-layout scroll-target">
       <div className="panel">
         <div className="section__heading compact">
           <p className="eyebrow">Pedido</p>
@@ -524,12 +707,33 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
           <label>
             Método de pago
             <select value={payment} onChange={(event) => setPayment(event.target.value)}>
-              <option>Efectivo</option>
-              <option>Tarjeta</option>
-              <option>Transferencia</option>
+              {PAYMENT_METHODS.map((method) => (
+                <option key={method.value} value={method.value}>{method.label}</option>
+              ))}
             </select>
           </label>
         </div>
+
+        {payment === 'pago_en_linea' && (
+          <div className="payment-info-card">
+            <p>Paga de forma segura con tarjeta antes de enviar tu pedido.</p>
+            {!isOnlinePaymentReady && (
+              <p className="small-note">Pago en línea todavía no está configurado o el pedido requiere confirmar precio por WhatsApp.</p>
+            )}
+            <button className="button--ghost" disabled={!isOnlinePaymentReady}>Pagar con tarjeta</button>
+          </div>
+        )}
+
+        {payment === 'criptomonedas' && (
+          <div className="payment-info-card">
+            <p>Te enviaremos los datos de pago por WhatsApp para confirmar tu pedido.</p>
+            {cryptoWallets.length > 0 && (
+              <ul className="wallet-list">
+                {cryptoWallets.map((wallet) => <li key={wallet}>{wallet}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
 
         <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={MAPS_LINK} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
 
@@ -558,11 +762,11 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
 
 function AccountSection({ profile, setProfile }) {
   return (
-    <section className="section account-grid">
+    <section id="club-el-punto" className="section account-grid scroll-target">
       <div className="panel">
         <div className="section__heading compact">
           <p className="eyebrow">Cliente</p>
-          <h2>Cuenta rápida</h2>
+          <h2>Club El Punto</h2>
           <p>Esta primera versión guarda los datos en el navegador para hacer pedidos más rápido.</p>
         </div>
         <div className="form-grid one">
@@ -581,7 +785,7 @@ function AccountSection({ profile, setProfile }) {
         </div>
       </div>
       <div className="benefits-card">
-        <p className="eyebrow">Beneficios</p>
+        <p className="eyebrow">Club El Punto</p>
         <h2>Club El Punto</h2>
         <ul>
           <li>Promos para clientes frecuentes.</li>
@@ -594,11 +798,15 @@ function AccountSection({ profile, setProfile }) {
   );
 }
 
-function AdminSection({ menu, setMenu, business, setBusiness }) {
+function AdminSection({ menu, setMenu, business, setBusiness, productImages, refreshProductImages, productImagesError }) {
   const [pin, setPin] = useState('');
   const [unlocked, setUnlocked] = useState(false);
   const [metrics, setMetrics] = useState(() => readStorage(STORAGE.metrics, defaultMetrics()));
-  const [newProduct, setNewProduct] = useState({ categoryId: menu[0]?.id || 'desayunos', name: '', price: '', description: '', ingredients: '' });
+  const [newProduct, setNewProduct] = useState({ categoryId: menu[0]?.id || 'desayunos', categoryName: '', name: '', price: '', description: '', ingredients: '' });
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [renameDrafts, setRenameDrafts] = useState({});
+  const [moveDrafts, setMoveDrafts] = useState({});
+  const adminCategories = categoryOptions(menu);
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonDraft, setJsonDraft] = useState(JSON.stringify(menu, null, 2));
 
@@ -627,34 +835,136 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
     }));
   }
 
+  function addCategoryByName(name) {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) return '';
+    const id = slugify(cleanName);
+    setMenu((current) => categoryExists(current, cleanName) ? current : [...current, createCategory(cleanName)]);
+    return id;
+  }
+
+  function renameCategory(categoryId, name) {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) return alert('Escribe un nombre de categoría.');
+    setMenu((current) => current.map((category) => category.id === categoryId ? {
+      ...category,
+      name: cleanName,
+      description: category.description || categoryDescription(cleanName)
+    } : category));
+  }
+
+  function deleteCategory(categoryId) {
+    const category = menu.find((item) => item.id === categoryId);
+    if (!category || category.items.length > 0) return alert('Solo puedes eliminar categorías sin productos asignados.');
+    setMenu((current) => current.filter((item) => item.id !== categoryId));
+  }
+
+  function moveItemToCategoryName(sourceCategoryId, itemId, name) {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) return;
+    const targetId = slugify(cleanName);
+    setMenu((current) => {
+      const withCategory = categoryExists(current, cleanName) ? current : [...current, createCategory(cleanName)];
+      const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
+      const itemToMove = sourceCategory?.items.find((item) => item.id === itemId);
+      if (!itemToMove) return withCategory;
+      return withCategory.map((category) => {
+        if (category.id === sourceCategoryId) return { ...category, items: category.items.filter((item) => item.id !== itemId) };
+        if (category.id === targetId || slugify(category.name) === targetId) return { ...category, items: [...category.items, itemToMove] };
+        return category;
+      });
+    });
+  }
+
+  function moveItem(sourceCategoryId, itemId, targetCategoryId) {
+    if (sourceCategoryId === targetCategoryId) return;
+    const targetOption = adminCategories.find((category) => category.id === targetCategoryId);
+    setMenu((current) => {
+      const withCategory = current.some((category) => category.id === targetCategoryId)
+        ? current
+        : [...current, createCategory(targetOption?.name || targetCategoryId)];
+      const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
+      const itemToMove = sourceCategory?.items.find((item) => item.id === itemId);
+      if (!itemToMove) return withCategory;
+      return withCategory.map((category) => {
+        if (category.id === sourceCategoryId) {
+          return { ...category, items: category.items.filter((item) => item.id !== itemId) };
+        }
+        if (category.id === targetCategoryId) {
+          return { ...category, items: [...category.items, itemToMove] };
+        }
+        return category;
+      });
+    });
+  }
+
+  function updateIngredient(categoryId, itemId, ingredientIndex, patch) {
+    setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
+      ...category,
+      items: category.items.map((item) => item.id !== itemId ? item : {
+        ...item,
+        ingredients: normalizeIngredients(item.ingredients).map((ingredient, index) => index === ingredientIndex ? { ...ingredient, ...patch } : ingredient)
+      })
+    }));
+  }
+
+  function addIngredient(categoryId, itemId) {
+    setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
+      ...category,
+      items: category.items.map((item) => item.id !== itemId ? item : {
+        ...item,
+        ingredients: [...normalizeIngredients(item.ingredients), { name: '', removable: true }]
+      })
+    }));
+  }
+
+  function deleteIngredient(categoryId, itemId, ingredientIndex) {
+    setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
+      ...category,
+      items: category.items.map((item) => item.id !== itemId ? item : {
+        ...item,
+        ingredients: normalizeIngredients(item.ingredients).filter((_, index) => index !== ingredientIndex)
+      })
+    }));
+  }
+
   function addProduct() {
     if (!newProduct.name.trim()) return alert('Agrega nombre del producto.');
     const product = {
       id: slugify(newProduct.name),
+      supabaseProductId: createStableUuid(),
       name: newProduct.name.trim(),
       price: Number(newProduct.price) || 0,
       description: newProduct.description.trim(),
-      ingredients: newProduct.ingredients.split(',').map((value) => value.trim()).filter(Boolean),
+      ingredients: splitCsv(newProduct.ingredients).map((name) => ({ name, removable: true })),
+      images: [],
       options: [],
       available: true
     };
-    setMenu((current) => current.map((category) => category.id !== newProduct.categoryId ? category : {
-      ...category,
-      items: [...category.items, product]
-    }));
-    setNewProduct({ ...newProduct, name: '', price: '', description: '', ingredients: '' });
+    const targetName = newProduct.categoryName.trim();
+    const selectedCategory = adminCategories.find((category) => category.id === newProduct.categoryId);
+    const targetId = targetName ? slugify(targetName) : newProduct.categoryId;
+    setMenu((current) => {
+      const needsCategory = !current.some((category) => category.id === targetId);
+      const withCategory = needsCategory ? [...current, createCategory(targetName || selectedCategory?.name || targetId)] : current;
+      return withCategory.map((category) => category.id !== targetId ? category : {
+        ...category,
+        items: [...category.items, product]
+      });
+    });
+    setNewProduct({ ...newProduct, categoryName: '', name: '', price: '', description: '', ingredients: '' });
   }
 
   function resetMenu() {
     if (!confirm('¿Seguro que quieres regresar al menú inicial?')) return;
-    setMenu(initialMenu);
-    setJsonDraft(JSON.stringify(initialMenu, null, 2));
+    setMenu(normalizeMenu(initialMenu));
+    setJsonDraft(JSON.stringify(normalizeMenu(initialMenu), null, 2));
   }
 
   function saveJsonMenu() {
     try {
       const parsed = JSON.parse(jsonDraft);
-      setMenu(parsed);
+      setMenu(normalizeMenu(parsed));
       setJsonMode(false);
     } catch {
       alert('El JSON tiene un error. Revísalo antes de guardar.');
@@ -663,7 +973,7 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
 
   if (!unlocked) {
     return (
-      <section className="section admin-login">
+      <section id="admin" className="section admin-login">
         <div className="panel narrow">
           <p className="eyebrow">Admin</p>
           <h2>Panel interno</h2>
@@ -680,7 +990,7 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
   }
 
   return (
-    <section className="section admin-grid">
+    <section id="admin" className="section admin-grid">
       <div className="panel">
         <div className="section__heading compact">
           <p className="eyebrow">Admin</p>
@@ -720,6 +1030,34 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
       <div className="panel admin-full">
         <div className="admin-header">
           <div>
+            <p className="eyebrow">Categorías</p>
+            <h2>Categorías del menú</h2>
+          </div>
+        </div>
+        <div className="category-admin-list">
+          {adminCategories.map((category) => (
+            <div key={category.id} className="category-admin-row">
+              <span>{category.name}</span>
+              <small>{category.items?.length || 0} productos</small>
+              <input
+                placeholder="Renombrar categoría"
+                value={renameDrafts[category.id] ?? category.name}
+                onChange={(event) => setRenameDrafts((current) => ({ ...current, [category.id]: event.target.value }))}
+              />
+              <button type="button" className="button--ghost" onClick={() => renameCategory(category.id, renameDrafts[category.id] ?? category.name)}>Renombrar</button>
+              <button type="button" className="button--danger" onClick={() => deleteCategory(category.id)} disabled={(category.items?.length || 0) > 0}>Eliminar</button>
+            </div>
+          ))}
+        </div>
+        <div className="category-admin-add">
+          <input placeholder="Nueva categoría (ej. Combos)" value={newCategoryName} onChange={(event) => setNewCategoryName(event.target.value)} />
+          <button type="button" onClick={() => { addCategoryByName(newCategoryName); setNewCategoryName(''); }}>Agregar categoría</button>
+        </div>
+      </div>
+
+      <div className="panel admin-full">
+        <div className="admin-header">
+          <div>
             <p className="eyebrow">Productos</p>
             <h2>Menú editable</h2>
           </div>
@@ -737,9 +1075,13 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
         ) : (
           <>
             <div className="add-product">
-              <select value={newProduct.categoryId} onChange={(event) => setNewProduct({ ...newProduct, categoryId: event.target.value })}>
-                {menu.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+              <select value={newProduct.categoryId} onChange={(event) => setNewProduct({ ...newProduct, categoryId: event.target.value, categoryName: '' })}>
+                {adminCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
               </select>
+              <input placeholder="O nueva categoría" value={newProduct.categoryName} onChange={(event) => setNewProduct({ ...newProduct, categoryName: event.target.value })} list="category-options" />
+              <datalist id="category-options">
+                {adminCategories.map((category) => <option key={category.id} value={category.name} />)}
+              </datalist>
               <input placeholder="Producto" value={newProduct.name} onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })} />
               <input placeholder="Precio" type="number" value={newProduct.price} onChange={(event) => setNewProduct({ ...newProduct, price: event.target.value })} />
               <input placeholder="Descripción" value={newProduct.description} onChange={(event) => setNewProduct({ ...newProduct, description: event.target.value })} />
@@ -751,16 +1093,78 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
               <div key={category.id} className="admin-category">
                 <h3>{category.name}</h3>
                 {category.items.map((item) => (
-                  <div key={item.id} className="admin-product-row">
-                    <div>
-                      <strong>{item.name}</strong>
-                      <p>{item.description}</p>
+                  <div key={item.id} className="admin-product-editor">
+                    <div className="admin-product-editor__grid">
+                      <label>
+                        Nombre
+                        <input value={item.name} onChange={(event) => updateItem(category.id, item.id, { name: event.target.value })} />
+                      </label>
+                      <label>
+                        Precio
+                        <input type="number" value={item.price || ''} placeholder="Precio" onChange={(event) => updateItem(category.id, item.id, { price: Number(event.target.value) || 0 })} />
+                      </label>
+                      <label>
+                        Categoría
+                        <select value={category.id} onChange={(event) => moveItem(category.id, item.id, event.target.value)}>
+                          {adminCategories.map((categoryOption) => <option key={categoryOption.id} value={categoryOption.id}>{categoryOption.name}</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        Nueva categoría
+                        <div className="category-move-inline">
+                          <input
+                            value={moveDrafts[item.id] || ''}
+                            onChange={(event) => setMoveDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
+                            placeholder="Ej. Combos"
+                            list="category-options"
+                          />
+                          <button type="button" className="button--ghost" onClick={() => { moveItemToCategoryName(category.id, item.id, moveDrafts[item.id]); setMoveDrafts((current) => ({ ...current, [item.id]: '' })); }}>Mover</button>
+                        </div>
+                      </label>
+                      <div className="admin-image-slot">
+                        <ProductImageManager
+                          item={item}
+                          categoryId={category.id}
+                          images={productImages[item.supabaseProductId || item.id] || []}
+                          adminPin={pin}
+                          refreshProductImages={refreshProductImages}
+                          productImagesError={productImagesError}
+                        />
+                      </div>
                     </div>
-                    <input type="number" value={item.price || ''} placeholder="Precio" onChange={(event) => updateItem(category.id, item.id, { price: Number(event.target.value) || 0 })} />
-                    <button className={item.available ? 'status status--ok' : 'status status--off'} onClick={() => updateItem(category.id, item.id, { available: !item.available })}>
-                      {item.available ? 'Disponible' : 'Agotado'}
-                    </button>
-                    <button className="button--danger" onClick={() => deleteItem(category.id, item.id)}>Quitar</button>
+
+                    <label>
+                      Descripción
+                      <textarea value={item.description || ''} onChange={(event) => updateItem(category.id, item.id, { description: event.target.value })} />
+                    </label>
+
+                    <div className="admin-ingredients">
+                      <div className="admin-subheader">
+                        <strong>Ingredientes</strong>
+                        <button type="button" className="button--ghost" onClick={() => addIngredient(category.id, item.id)}>Agregar ingrediente</button>
+                      </div>
+                      {normalizeIngredients(item.ingredients).length === 0 && <p className="small-note">Sin ingredientes capturados.</p>}
+                      {normalizeIngredients(item.ingredients).map((ingredient, ingredientIndex) => (
+                        <div key={`${item.id}-${ingredientIndex}`} className="ingredient-editor">
+                          <label>
+                            Ingrediente
+                            <input value={ingredient.name} onChange={(event) => updateIngredient(category.id, item.id, ingredientIndex, { name: event.target.value })} placeholder="huevo" />
+                          </label>
+                          <label className="checkbox-line">
+                            <input type="checkbox" checked={ingredient.removable} onChange={(event) => updateIngredient(category.id, item.id, ingredientIndex, { removable: event.target.checked })} />
+                            Cliente puede quitarlo
+                          </label>
+                          <button type="button" className="button--danger" onClick={() => deleteIngredient(category.id, item.id, ingredientIndex)}>Eliminar</button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="admin-product-editor__actions">
+                      <button className={item.available ? 'status status--ok' : 'status status--off'} onClick={() => updateItem(category.id, item.id, { available: !item.available })}>
+                        {item.available ? 'Disponible' : 'Agotado'}
+                      </button>
+                      <button className="button--danger" onClick={() => deleteItem(category.id, item.id)}>Quitar producto</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -772,12 +1176,119 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
   );
 }
 
+
+function ProductImageManager({ item, categoryId, images, adminPin, refreshProductImages, productImagesError }) {
+  const [uploading, setUploading] = useState(false);
+  const [message, setMessage] = useState('');
+  const productId = item.supabaseProductId || item.id;
+  const remainingSlots = Math.max(0, 5 - images.length);
+
+  async function uploadFiles(event) {
+    const files = Array.from(event.target.files || []).slice(0, remainingSlots);
+    if (!files.length) return;
+    if (!isSupabaseConfigured) {
+      setMessage('Configura VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY para usar imágenes en Supabase.');
+      event.target.value = '';
+      return;
+    }
+    setUploading(true);
+    setMessage('');
+    try {
+      for (const [fileIndex, file] of files.entries()) {
+        const formData = new FormData();
+        formData.append('adminPin', adminPin);
+        formData.append('productId', productId);
+        formData.append('category', categoryId);
+        formData.append('name', item.name || 'Producto');
+        formData.append('description', item.description || '');
+        formData.append('price', String(item.price || ''));
+        formData.append('available', String(item.available !== false));
+        formData.append('sortOrder', String(images.length + fileIndex));
+        formData.append('image', file);
+
+        const response = await fetch('/.netlify/functions/upload-product-image', {
+          method: 'POST',
+          body: formData
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'No se pudo subir la imagen.');
+      }
+      await refreshProductImages();
+      setMessage('Imagen subida a Supabase.');
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setUploading(false);
+      event.target.value = '';
+    }
+  }
+
+  async function deleteImage(image) {
+    if (!confirm('¿Eliminar esta imagen del producto?')) return;
+    setUploading(true);
+    setMessage('');
+    try {
+      const response = await fetch('/.netlify/functions/upload-product-image', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminPin, id: image.id, storage_path: image.storage_path })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'No se pudo eliminar la imagen.');
+      await refreshProductImages();
+      setMessage(result.warning || 'Imagen eliminada.');
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <div className="product-image-manager">
+      <div className="admin-subheader">
+        <strong>Imágenes Supabase</strong>
+        <span className="small-note">{images.length}/5</span>
+      </div>
+      {productImagesError && <p className="small-note warning-note">{productImagesError}</p>}
+      {!isSupabaseConfigured && <p className="small-note warning-note">Configura Supabase para cargar y mostrar imágenes reales.</p>}
+      <div className="admin-image-preview-list">
+        {images.length === 0 && <div className="admin-image-empty">Sin imágenes en Supabase</div>}
+        {images.map((image) => (
+          <div key={image.id} className="admin-image-preview">
+            <img src={image.image_url} alt={item.name} />
+            <button type="button" className="button--danger" onClick={() => deleteImage(image)} disabled={uploading}>Eliminar</button>
+          </div>
+        ))}
+      </div>
+      <label className="file-picker">
+        Subir imágenes (jpeg/png/webp, máx. 2 MB c/u)
+        <input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={uploading || remainingSlots === 0} onChange={uploadFiles} />
+      </label>
+      {remainingSlots === 0 && <p className="small-note">Máximo 5 imágenes por producto.</p>}
+      {uploading && <p className="small-note">Procesando imagen...</p>}
+      {message && <p className="small-note">{message}</p>}
+    </div>
+  );
+}
+
 function Metric({ label, value }) {
   return (
     <div className="metric-card">
       <span>{label}</span>
       <strong>{value || 0}</strong>
     </div>
+  );
+}
+
+
+function FloatingCart({ cartCount, cartTotal, navigateTo }) {
+  return (
+    <button className="floating-cart" onClick={() => navigateTo('pedido')} aria-label="Abrir pedido">
+      <span>🛒</span>
+      <strong>{cartCount || 0}</strong>
+      <small>{cartTotal ? formatMoney(cartTotal) : 'Sin total'}</small>
+    </button>
   );
 }
 
