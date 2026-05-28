@@ -99,7 +99,7 @@ function App() {
   const [business, setBusiness] = usePersistedState(STORAGE.business, businessDefaults);
   const [cart, setCart] = usePersistedState(STORAGE.cart, []);
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
-  const [activeSection, setActiveSection] = useState('menu');
+  const [activeSection, setActiveSection] = useState('inicio');
 
   useEffect(() => {
     ensureSessionMetric();
@@ -122,8 +122,11 @@ function App() {
 
   return (
     <main>
+      <Header business={business} setActiveSection={setActiveSection} />
       <Hero business={business} setActiveSection={setActiveSection} cartCount={cart.length} />
       <Navigation activeSection={activeSection} setActiveSection={setActiveSection} />
+
+      {activeSection === 'inicio' && <HomeImages />}
 
       {activeSection === 'menu' && (
         <MenuSection menu={menu} addToCart={addToCart} />
@@ -159,6 +162,48 @@ function App() {
   );
 }
 
+
+function Header({ business, setActiveSection }) {
+  const [logoError, setLogoError] = useState(false);
+  const links = [
+    ['inicio', 'Inicio'],
+    ['menu', 'Menú'],
+    ['pedido', 'Pedido'],
+    ['cuenta', 'Beneficios'],
+    ['admin', 'Admin']
+  ];
+
+  return (
+    <header className="site-header">
+      <button className="brand-mini" onClick={() => setActiveSection('inicio')}>
+        {!logoError ? <img src="/images/logo-el-punto.png" alt="Logo El Punto" onError={() => setLogoError(true)} /> : <span>El Punto</span>}
+      </button>
+      <nav className="site-nav">
+        {links.map(([id, label]) => (
+          <button key={id} className="site-nav__link" onClick={() => setActiveSection(id)}>{label}</button>
+        ))}
+      </nav>
+      <button className="site-header__cta" onClick={() => setActiveSection('pedido')}>Ordenar por WhatsApp</button>
+    </header>
+  );
+}
+
+function ImagePlaceholder({ src, alt, fallback }) {
+  const [error, setError] = useState(false);
+  if (error) return <div className="image-placeholder">{fallback}</div>;
+  return <img src={src} alt={alt} className="home-image" onError={() => setError(true)} />;
+}
+
+function HomeImages() {
+  return (
+    <section className="section home-gallery">
+      <ImagePlaceholder src="/images/inicio/hero.jpg" alt="Imagen principal" fallback="Imagen del producto" />
+      <ImagePlaceholder src="/images/inicio/desayuno-destacado.jpg" alt="Desayuno destacado" fallback="Desayuno destacado" />
+      <ImagePlaceholder src="/images/inicio/local.jpg" alt="Foto del local" fallback="Foto del local" />
+    </section>
+  );
+}
+
 function Hero({ business, setActiveSection, cartCount }) {
   const [logoError, setLogoError] = useState(false);
 
@@ -174,11 +219,11 @@ function Hero({ business, setActiveSection, cartCount }) {
           )}
           <div className="brand-line" aria-hidden="true" />
         </div>
-        <p className="subtitle">{business.subtitle}</p>
-        <p className="hero__copy">Desayunos, birria y bebidas listos para pedir por WhatsApp. Escoge recoger o domicilio, ajusta ingredientes y manda tu orden en un mensaje.</p>
+        <p className="subtitle">Food To Go</p>
+        <p className="hero__copy">Desayunos, comida rápida y antojos listos para llevar.</p>
         <div className="hero__actions">
           <button onClick={() => setActiveSection('menu')}>Ver menú</button>
-          <button className="button--ghost" onClick={() => setActiveSection('pedido')}>Mi pedido ({cartCount})</button>
+          <button className="button--ghost" onClick={() => setActiveSection('pedido')}>Ordenar por WhatsApp ({cartCount})</button>
         </div>
       </div>
       <div className="hero__card">
@@ -194,6 +239,7 @@ function Hero({ business, setActiveSection, cartCount }) {
 
 function Navigation({ activeSection, setActiveSection }) {
   const items = [
+    ['inicio', 'Inicio'],
     ['menu', 'Menú'],
     ['pedido', 'Pedido'],
     ['cuenta', 'Cuenta / beneficios'],
