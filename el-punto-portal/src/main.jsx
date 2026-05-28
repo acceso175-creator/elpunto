@@ -13,6 +13,7 @@ const STORAGE = {
 };
 
 const ADMIN_PIN = '1234';
+const MAPS_LINK = 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7';
 
 function readStorage(key, fallback) {
   try {
@@ -124,6 +125,7 @@ function App() {
     <main>
       <Header business={business} setActiveSection={setActiveSection} />
       <Hero business={business} setActiveSection={setActiveSection} cartCount={cart.length} />
+      <LocationSection />
       <Navigation activeSection={activeSection} setActiveSection={setActiveSection} />
 
       {activeSection === 'inicio' && <HomeImages />}
@@ -167,11 +169,23 @@ function Header({ business, setActiveSection }) {
   const [logoError, setLogoError] = useState(false);
   const links = [
     ['inicio', 'Inicio'],
+    ['ubicacion', 'Ubicación'],
     ['menu', 'Menú'],
     ['pedido', 'Pedido'],
     ['cuenta', 'Beneficios'],
     ['admin', 'Admin']
   ];
+
+  function handleHeaderNav(target) {
+    if (target === 'ubicacion') {
+      setActiveSection('inicio');
+      setTimeout(() => {
+        document.getElementById('ubicacion')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 0);
+      return;
+    }
+    setActiveSection(target);
+  }
 
   return (
     <header className="site-header">
@@ -180,7 +194,7 @@ function Header({ business, setActiveSection }) {
       </button>
       <nav className="site-nav">
         {links.map(([id, label]) => (
-          <button key={id} className="site-nav__link" onClick={() => setActiveSection(id)}>{label}</button>
+          <button key={id} className="site-nav__link" onClick={() => handleHeaderNav(id)}>{label}</button>
         ))}
       </nav>
       <button className="site-header__cta" onClick={() => setActiveSection('pedido')}>Ordenar por WhatsApp</button>
@@ -232,6 +246,30 @@ function Hero({ business, setActiveSection, cartCount }) {
         <p>Recoger o domicilio</p>
         <p>Pago en efectivo, tarjeta o transferencia</p>
         <p>WhatsApp automático con número de orden</p>
+      </div>
+    </section>
+  );
+}
+
+
+function LocationSection() {
+  return (
+    <section id="ubicacion" className="section">
+      <div className="location-card">
+        <div>
+          <p className="eyebrow">Ubicación</p>
+          <h2>Estamos aquí</h2>
+          <p className="location-copy">Pasa por tu pedido o mándanos tu ubicación para entrega.</p>
+          <div className="location-actions">
+            <a className="location-link location-link--primary" href={MAPS_LINK} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
+            <a className="location-link location-link--ghost" href={MAPS_LINK} target="_blank" rel="noreferrer">Ordenar por WhatsApp</a>
+          </div>
+        </div>
+        <div className="map-placeholder" aria-label="Mapa del local">
+          <span className="map-pin" aria-hidden="true">📍</span>
+          <strong>Mapa del local</strong>
+          <p>Espacio preparado para reemplazar después por Google Maps Embed.</p>
+        </div>
       </div>
     </section>
   );
@@ -492,6 +530,8 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
             </select>
           </label>
         </div>
+
+        <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={MAPS_LINK} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
 
         {orderType === 'domicilio' && (
           <div className="delivery-box">
