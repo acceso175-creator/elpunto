@@ -13,6 +13,7 @@ const STORAGE = {
 };
 
 const ADMIN_PIN = '1234';
+const MAPS_LINK = 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7';
 
 function readStorage(key, fallback) {
   try {
@@ -99,7 +100,7 @@ function App() {
   const [business, setBusiness] = usePersistedState(STORAGE.business, businessDefaults);
   const [cart, setCart] = usePersistedState(STORAGE.cart, []);
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
-  const [activeSection, setActiveSection] = useState('menu');
+  const [activeSection, setActiveSection] = useState('inicio');
 
   useEffect(() => {
     ensureSessionMetric();
@@ -122,8 +123,12 @@ function App() {
 
   return (
     <main>
+      <Header business={business} setActiveSection={setActiveSection} />
       <Hero business={business} setActiveSection={setActiveSection} cartCount={cart.length} />
+      <LocationSection />
       <Navigation activeSection={activeSection} setActiveSection={setActiveSection} />
+
+      {activeSection === 'inicio' && <HomeImages />}
 
       {activeSection === 'menu' && (
         <MenuSection menu={menu} addToCart={addToCart} />
@@ -159,21 +164,84 @@ function App() {
   );
 }
 
+
+function Header({ business, setActiveSection }) {
+  const [logoError, setLogoError] = useState(false);
+  const links = [
+    ['inicio', 'Inicio'],
+    ['ubicacion', 'Ubicación'],
+    ['menu', 'Menú'],
+    ['pedido', 'Pedido'],
+    ['cuenta', 'Beneficios'],
+    ['admin', 'Admin']
+  ];
+
+  function handleHeaderNav(target) {
+    if (target === 'ubicacion') {
+      setActiveSection('inicio');
+      setTimeout(() => {
+        document.getElementById('ubicacion')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 0);
+      return;
+    }
+    setActiveSection(target);
+  }
+
+  return (
+    <header className="site-header">
+      <button className="brand-mini" onClick={() => setActiveSection('inicio')}>
+        {!logoError ? <img src="/images/logo-el-punto.png" alt="Logo El Punto" onError={() => setLogoError(true)} /> : <span>El Punto</span>}
+      </button>
+      <nav className="site-nav">
+        {links.map(([id, label]) => (
+          <button key={id} className="site-nav__link" onClick={() => handleHeaderNav(id)}>{label}</button>
+        ))}
+      </nav>
+      <button className="site-header__cta" onClick={() => setActiveSection('pedido')}>Ordenar por WhatsApp</button>
+    </header>
+  );
+}
+
+function ImagePlaceholder({ src, alt, fallback }) {
+  const [error, setError] = useState(false);
+  if (error) return <div className="image-placeholder">{fallback}</div>;
+  return <img src={src} alt={alt} className="home-image" onError={() => setError(true)} />;
+}
+
+function HomeImages() {
+  return (
+    <section className="section home-gallery">
+      <ImagePlaceholder src="/images/inicio/hero.jpg" alt="Imagen principal" fallback="Imagen del producto" />
+      <ImagePlaceholder src="/images/inicio/desayuno-destacado.jpg" alt="Desayuno destacado" fallback="Desayuno destacado" />
+      <ImagePlaceholder src="/images/inicio/local.jpg" alt="Foto del local" fallback="Foto del local" />
+    </section>
+  );
+}
+
 function Hero({ business, setActiveSection, cartCount }) {
+  const [logoError, setLogoError] = useState(false);
+
   return (
     <section className="hero">
       <div className="hero__content">
         <p className="eyebrow">Centro de Chihuahua · para llevar</p>
-        <h1>{business.name}<span>.</span></h1>
-        <p className="subtitle">{business.subtitle}</p>
-        <p className="hero__copy">Desayunos, birria y bebidas listos para pedir por WhatsApp. Escoge recoger o domicilio, ajusta ingredientes y manda tu orden en un mensaje.</p>
+        <div className="brand-lockup">
+          {!logoError ? (
+            <img src="/images/logo-el-punto.png" alt="Logo El Punto" className="brand-logo" onError={() => setLogoError(true)} />
+          ) : (
+            <h1>{business.name}<span>.</span></h1>
+          )}
+          <div className="brand-line" aria-hidden="true" />
+        </div>
+        <p className="subtitle">Food To Go</p>
+        <p className="hero__copy">Desayunos, comida rápida y antojos listos para llevar.</p>
         <div className="hero__actions">
           <button onClick={() => setActiveSection('menu')}>Ver menú</button>
-          <button className="button--ghost" onClick={() => setActiveSection('pedido')}>Mi pedido ({cartCount})</button>
+          <button className="button--ghost" onClick={() => setActiveSection('pedido')}>Ordenar por WhatsApp ({cartCount})</button>
         </div>
       </div>
       <div className="hero__card">
-        <div className="pin">●</div>
+        <div className="pin" aria-hidden="true">⌖</div>
         <h2>Pedido rápido</h2>
         <p>Recoger o domicilio</p>
         <p>Pago en efectivo, tarjeta o transferencia</p>
@@ -183,8 +251,33 @@ function Hero({ business, setActiveSection, cartCount }) {
   );
 }
 
+
+function LocationSection() {
+  return (
+    <section id="ubicacion" className="section">
+      <div className="location-card">
+        <div>
+          <p className="eyebrow">Ubicación</p>
+          <h2>Estamos aquí</h2>
+          <p className="location-copy">Pasa por tu pedido o mándanos tu ubicación para entrega.</p>
+          <div className="location-actions">
+            <a className="location-link location-link--primary" href={MAPS_LINK} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
+            <a className="location-link location-link--ghost" href={MAPS_LINK} target="_blank" rel="noreferrer">Ordenar por WhatsApp</a>
+          </div>
+        </div>
+        <div className="map-placeholder" aria-label="Mapa del local">
+          <span className="map-pin" aria-hidden="true">📍</span>
+          <strong>Mapa del local</strong>
+          <p>Espacio preparado para reemplazar después por Google Maps Embed.</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function Navigation({ activeSection, setActiveSection }) {
   const items = [
+    ['inicio', 'Inicio'],
     ['menu', 'Menú'],
     ['pedido', 'Pedido'],
     ['cuenta', 'Cuenta / beneficios'],
@@ -437,6 +530,8 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
             </select>
           </label>
         </div>
+
+        <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={MAPS_LINK} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
 
         {orderType === 'domicilio' && (
           <div className="delivery-box">
