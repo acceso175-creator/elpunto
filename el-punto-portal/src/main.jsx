@@ -23,6 +23,7 @@ const PAYMENT_METHODS = [
   { value: 'pago_en_linea', label: 'Pago en línea' },
   { value: 'criptomonedas', label: 'Criptomonedas' }
 ];
+const BASE_CATEGORY_NAMES = ['Desayunos', 'Birria', 'Bebidas', 'Postres'];
 
 
 function readStorage(key, fallback) {
@@ -45,6 +46,41 @@ function splitCsv(value) {
     .filter(Boolean);
 }
 
+function categoryDescription(name) {
+  const known = {
+    desayunos: 'Clásicos para arrancar el día.',
+    birria: 'Opciones con cebolla, cilantro, limón y salsa.',
+    bebidas: 'Café, jugos, malteadas y smoothies.',
+    postres: 'Algo dulce para cerrar tu pedido.'
+  };
+  return known[slugify(name)] || 'Categoría editable desde Admin.';
+}
+
+function createCategory(name) {
+  const cleanName = String(name || '').trim();
+  return {
+    id: slugify(cleanName) || `categoria-${Date.now()}`,
+    name: cleanName || 'Nueva categoría',
+    description: categoryDescription(cleanName),
+    items: []
+  };
+}
+
+function categoryExists(menu, name) {
+  const id = slugify(name);
+  return menu.some((category) => category.id === id || slugify(category.name) === id);
+}
+
+function categoryOptions(menu) {
+  const byId = new Map();
+  BASE_CATEGORY_NAMES.forEach((name) => {
+    const category = menu.find((item) => slugify(item.name) === slugify(name) || item.id === slugify(name));
+    byId.set(slugify(name), category || createCategory(name));
+  });
+  menu.forEach((category) => byId.set(category.id || slugify(category.name), category));
+  return [...byId.values()];
+}
+
 function normalizeIngredients(ingredients) {
   if (!Array.isArray(ingredients)) return [];
   return ingredients
@@ -64,6 +100,9 @@ function normalizeMenu(menu) {
   if (!Array.isArray(menu)) return normalizeMenu(initialMenu);
   return menu.map((category) => ({
     ...category,
+    id: category.id || slugify(category.name),
+    name: category.name || 'Categoría',
+    description: category.description || categoryDescription(category.name),
     items: (category.items || []).map((item) => ({
       ...item,
       supabaseProductId: isUuid(item.supabaseProductId) ? item.supabaseProductId : (isUuid(item.id) ? item.id : createStableUuid()),
@@ -387,6 +426,13 @@ function LocationSection() {
 }
 
 function MenuSection({ menu, addToCart, productImages }) {
+  const [activeCategory, setActiveCategory] = useState('todo');
+  const visibleCategories = menu.filter((category) => (category.items || []).length > 0);
+  const filteredCategories = activeCategory === 'todo'
+    ? visibleCategories
+    : visibleCategories.filter((category) => category.id === activeCategory);
+  const filters = [{ id: 'todo', name: 'Todo' }, ...visibleCategories.map((category) => ({ id: category.id, name: category.name }))];
+
   return (
     <section id="menu" className="section scroll-target">
       <div className="section__heading">
@@ -395,7 +441,22 @@ function MenuSection({ menu, addToCart, productImages }) {
         <p>Elige tus productos, ajusta ingredientes y manda tu pedido directo por WhatsApp.</p>
       </div>
 
-      {menu.map((category) => (
+      <div className="category-filter" aria-label="Filtros de categorías">
+        {filters.map((filter) => (
+          <button
+            key={filter.id}
+            type="button"
+            className={activeCategory === filter.id ? 'category-filter__chip active' : 'category-filter__chip'}
+            onClick={() => setActiveCategory(filter.id)}
+          >
+            {filter.name}
+          </button>
+        ))}
+      </div>
+
+      {filteredCategories.length === 0 ? (
+        <p className="empty">Todavía no hay productos en esta categoría.</p>
+      ) : filteredCategories.map((category) => (
         <div key={category.id} className="category">
           <div className="category__title">
             <h3>{category.name}</h3>
@@ -741,7 +802,11 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   const [pin, setPin] = useState('');
   const [unlocked, setUnlocked] = useState(false);
   const [metrics, setMetrics] = useState(() => readStorage(STORAGE.metrics, defaultMetrics()));
-  const [newProduct, setNewProduct] = useState({ categoryId: menu[0]?.id || 'desayunos', name: '', price: '', description: '', ingredients: '' });
+  const [newProduct, setNewProduct] = useState({ categoryId: menu[0]?.id || 'desayunos', categoryName: '', name: '', price: '', description: '', ingredients: '' });
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [renameDrafts, setRenameDrafts] = useState({});
+  const [moveDrafts, setMoveDrafts] = useState({});
+  const adminCategories = categoryOptions(menu);
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonDraft, setJsonDraft] = useState(JSON.stringify(menu, null, 2));
 
@@ -770,13 +835,58 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     }));
   }
 
+  function addCategoryByName(name) {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) return '';
+    const id = slugify(cleanName);
+    setMenu((current) => categoryExists(current, cleanName) ? current : [...current, createCategory(cleanName)]);
+    return id;
+  }
+
+  function renameCategory(categoryId, name) {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) return alert('Escribe un nombre de categoría.');
+    setMenu((current) => current.map((category) => category.id === categoryId ? {
+      ...category,
+      name: cleanName,
+      description: category.description || categoryDescription(cleanName)
+    } : category));
+  }
+
+  function deleteCategory(categoryId) {
+    const category = menu.find((item) => item.id === categoryId);
+    if (!category || category.items.length > 0) return alert('Solo puedes eliminar categorías sin productos asignados.');
+    setMenu((current) => current.filter((item) => item.id !== categoryId));
+  }
+
+  function moveItemToCategoryName(sourceCategoryId, itemId, name) {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) return;
+    const targetId = slugify(cleanName);
+    setMenu((current) => {
+      const withCategory = categoryExists(current, cleanName) ? current : [...current, createCategory(cleanName)];
+      const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
+      const itemToMove = sourceCategory?.items.find((item) => item.id === itemId);
+      if (!itemToMove) return withCategory;
+      return withCategory.map((category) => {
+        if (category.id === sourceCategoryId) return { ...category, items: category.items.filter((item) => item.id !== itemId) };
+        if (category.id === targetId || slugify(category.name) === targetId) return { ...category, items: [...category.items, itemToMove] };
+        return category;
+      });
+    });
+  }
+
   function moveItem(sourceCategoryId, itemId, targetCategoryId) {
     if (sourceCategoryId === targetCategoryId) return;
+    const targetOption = adminCategories.find((category) => category.id === targetCategoryId);
     setMenu((current) => {
-      const sourceCategory = current.find((category) => category.id === sourceCategoryId);
+      const withCategory = current.some((category) => category.id === targetCategoryId)
+        ? current
+        : [...current, createCategory(targetOption?.name || targetCategoryId)];
+      const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
       const itemToMove = sourceCategory?.items.find((item) => item.id === itemId);
-      if (!itemToMove) return current;
-      return current.map((category) => {
+      if (!itemToMove) return withCategory;
+      return withCategory.map((category) => {
         if (category.id === sourceCategoryId) {
           return { ...category, items: category.items.filter((item) => item.id !== itemId) };
         }
@@ -831,11 +941,18 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       options: [],
       available: true
     };
-    setMenu((current) => current.map((category) => category.id !== newProduct.categoryId ? category : {
-      ...category,
-      items: [...category.items, product]
-    }));
-    setNewProduct({ ...newProduct, name: '', price: '', description: '', ingredients: '' });
+    const targetName = newProduct.categoryName.trim();
+    const selectedCategory = adminCategories.find((category) => category.id === newProduct.categoryId);
+    const targetId = targetName ? slugify(targetName) : newProduct.categoryId;
+    setMenu((current) => {
+      const needsCategory = !current.some((category) => category.id === targetId);
+      const withCategory = needsCategory ? [...current, createCategory(targetName || selectedCategory?.name || targetId)] : current;
+      return withCategory.map((category) => category.id !== targetId ? category : {
+        ...category,
+        items: [...category.items, product]
+      });
+    });
+    setNewProduct({ ...newProduct, categoryName: '', name: '', price: '', description: '', ingredients: '' });
   }
 
   function resetMenu() {
@@ -913,6 +1030,34 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       <div className="panel admin-full">
         <div className="admin-header">
           <div>
+            <p className="eyebrow">Categorías</p>
+            <h2>Categorías del menú</h2>
+          </div>
+        </div>
+        <div className="category-admin-list">
+          {adminCategories.map((category) => (
+            <div key={category.id} className="category-admin-row">
+              <span>{category.name}</span>
+              <small>{category.items?.length || 0} productos</small>
+              <input
+                placeholder="Renombrar categoría"
+                value={renameDrafts[category.id] ?? category.name}
+                onChange={(event) => setRenameDrafts((current) => ({ ...current, [category.id]: event.target.value }))}
+              />
+              <button type="button" className="button--ghost" onClick={() => renameCategory(category.id, renameDrafts[category.id] ?? category.name)}>Renombrar</button>
+              <button type="button" className="button--danger" onClick={() => deleteCategory(category.id)} disabled={(category.items?.length || 0) > 0}>Eliminar</button>
+            </div>
+          ))}
+        </div>
+        <div className="category-admin-add">
+          <input placeholder="Nueva categoría (ej. Combos)" value={newCategoryName} onChange={(event) => setNewCategoryName(event.target.value)} />
+          <button type="button" onClick={() => { addCategoryByName(newCategoryName); setNewCategoryName(''); }}>Agregar categoría</button>
+        </div>
+      </div>
+
+      <div className="panel admin-full">
+        <div className="admin-header">
+          <div>
             <p className="eyebrow">Productos</p>
             <h2>Menú editable</h2>
           </div>
@@ -930,9 +1075,13 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         ) : (
           <>
             <div className="add-product">
-              <select value={newProduct.categoryId} onChange={(event) => setNewProduct({ ...newProduct, categoryId: event.target.value })}>
-                {menu.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+              <select value={newProduct.categoryId} onChange={(event) => setNewProduct({ ...newProduct, categoryId: event.target.value, categoryName: '' })}>
+                {adminCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
               </select>
+              <input placeholder="O nueva categoría" value={newProduct.categoryName} onChange={(event) => setNewProduct({ ...newProduct, categoryName: event.target.value })} list="category-options" />
+              <datalist id="category-options">
+                {adminCategories.map((category) => <option key={category.id} value={category.name} />)}
+              </datalist>
               <input placeholder="Producto" value={newProduct.name} onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })} />
               <input placeholder="Precio" type="number" value={newProduct.price} onChange={(event) => setNewProduct({ ...newProduct, price: event.target.value })} />
               <input placeholder="Descripción" value={newProduct.description} onChange={(event) => setNewProduct({ ...newProduct, description: event.target.value })} />
@@ -957,8 +1106,20 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
                       <label>
                         Categoría
                         <select value={category.id} onChange={(event) => moveItem(category.id, item.id, event.target.value)}>
-                          {menu.map((categoryOption) => <option key={categoryOption.id} value={categoryOption.id}>{categoryOption.name}</option>)}
+                          {adminCategories.map((categoryOption) => <option key={categoryOption.id} value={categoryOption.id}>{categoryOption.name}</option>)}
                         </select>
+                      </label>
+                      <label>
+                        Nueva categoría
+                        <div className="category-move-inline">
+                          <input
+                            value={moveDrafts[item.id] || ''}
+                            onChange={(event) => setMoveDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
+                            placeholder="Ej. Combos"
+                            list="category-options"
+                          />
+                          <button type="button" className="button--ghost" onClick={() => { moveItemToCategoryName(category.id, item.id, moveDrafts[item.id]); setMoveDrafts((current) => ({ ...current, [item.id]: '' })); }}>Mover</button>
+                        </div>
                       </label>
                       <div className="admin-image-slot">
                         <ProductImageManager
