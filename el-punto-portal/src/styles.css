@@ -800,3 +800,12 @@ footer strong {
 .home-image, .image-placeholder { width: 100%; min-height: 220px; border-radius: 24px; border: 1px solid var(--line); background: linear-gradient(150deg, #111315 0%, #202326 100%); box-shadow: var(--shadow-soft); }
 .home-image { object-fit: cover; }
 .image-placeholder { display: grid; place-items: center; color: var(--muted); font-weight: 700; }
+
+.brand-mini img { height: 46px; }
+.site-nav__link { padding: 0.45rem 0.65rem; font-size: 0.9rem; }
+main { padding-bottom: 6rem; }
+.product-media { margin-bottom: 0.8rem; }
+.product-media__image,.product-media__placeholder { width: 100%; height: 170px; border-radius: 16px; border: 1px solid var(--line); background: #121416; object-fit: cover; display:grid; place-items:center; color:var(--muted); }
+.floating-cart { position: fixed; right: 1rem; bottom: 1rem; z-index: 55; display: grid; gap: 0.1rem; border-radius: 18px; padding: 0.6rem 0.9rem; box-shadow: var(--shadow); }
+.floating-cart small { color: #fff; opacity: 0.85; }
+@media (max-width: 680px){ .floating-cart{ right: .7rem; bottom: .7rem; } }

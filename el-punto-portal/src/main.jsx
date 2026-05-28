@@ -107,6 +107,7 @@ function App() {
   }, []);
 
   const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + calculateLine(item) * item.quantity, 0), [cart]);
+  const cartCount = useMemo(() => cart.reduce((sum, item) => sum + item.quantity, 0), [cart]);
 
   function addToCart(payload) {
     setCart((current) => [...current, { ...payload, cartId: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}` }]);
@@ -124,10 +125,9 @@ function App() {
   return (
     <main>
       <Header business={business} setActiveSection={setActiveSection} />
-      <Hero business={business} setActiveSection={setActiveSection} cartCount={cart.length} />
+      <Hero setActiveSection={setActiveSection} />
       <LocationSection />
-      <Navigation activeSection={activeSection} setActiveSection={setActiveSection} />
-
+      
       {activeSection === 'inicio' && <HomeImages />}
 
       {activeSection === 'menu' && (
@@ -160,6 +160,7 @@ function App() {
       )}
 
       <Footer business={business} />
+      <FloatingCart cartCount={cartCount} cartTotal={cartTotal} setActiveSection={setActiveSection} />
     </main>
   );
 }
@@ -172,7 +173,7 @@ function Header({ business, setActiveSection }) {
     ['ubicacion', 'Ubicación'],
     ['menu', 'Menú'],
     ['pedido', 'Pedido'],
-    ['cuenta', 'Beneficios'],
+    ['cuenta', 'Club El Punto'],
     ['admin', 'Admin']
   ];
 
@@ -197,7 +198,7 @@ function Header({ business, setActiveSection }) {
           <button key={id} className="site-nav__link" onClick={() => handleHeaderNav(id)}>{label}</button>
         ))}
       </nav>
-      <button className="site-header__cta" onClick={() => setActiveSection('pedido')}>Ordenar por WhatsApp</button>
+      <button className="site-header__cta" onClick={() => setActiveSection('menu')}>Hacer pedido</button>
     </header>
   );
 }
@@ -218,26 +219,16 @@ function HomeImages() {
   );
 }
 
-function Hero({ business, setActiveSection, cartCount }) {
-  const [logoError, setLogoError] = useState(false);
-
+function Hero({ setActiveSection }) {
   return (
     <section className="hero">
       <div className="hero__content">
         <p className="eyebrow">Centro de Chihuahua · para llevar</p>
-        <div className="brand-lockup">
-          {!logoError ? (
-            <img src="/images/logo-el-punto.png" alt="Logo El Punto" className="brand-logo" onError={() => setLogoError(true)} />
-          ) : (
-            <h1>{business.name}<span>.</span></h1>
-          )}
-          <div className="brand-line" aria-hidden="true" />
-        </div>
+        <h1>El Punto<span>.</span></h1>
         <p className="subtitle">Food To Go</p>
         <p className="hero__copy">Desayunos, comida rápida y antojos listos para llevar.</p>
         <div className="hero__actions">
           <button onClick={() => setActiveSection('menu')}>Ver menú</button>
-          <button className="button--ghost" onClick={() => setActiveSection('pedido')}>Ordenar por WhatsApp ({cartCount})</button>
         </div>
       </div>
       <div className="hero__card">
@@ -262,8 +253,7 @@ function LocationSection() {
           <p className="location-copy">Pasa por tu pedido o mándanos tu ubicación para entrega.</p>
           <div className="location-actions">
             <a className="location-link location-link--primary" href={MAPS_LINK} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
-            <a className="location-link location-link--ghost" href={MAPS_LINK} target="_blank" rel="noreferrer">Ordenar por WhatsApp</a>
-          </div>
+                      </div>
         </div>
         <div className="map-placeholder" aria-label="Mapa del local">
           <span className="map-pin" aria-hidden="true">📍</span>
@@ -275,33 +265,13 @@ function LocationSection() {
   );
 }
 
-function Navigation({ activeSection, setActiveSection }) {
-  const items = [
-    ['inicio', 'Inicio'],
-    ['menu', 'Menú'],
-    ['pedido', 'Pedido'],
-    ['cuenta', 'Cuenta / beneficios'],
-    ['admin', 'Admin']
-  ];
-
-  return (
-    <nav className="tabs">
-      {items.map(([id, label]) => (
-        <button key={id} className={activeSection === id ? 'active' : ''} onClick={() => setActiveSection(id)}>
-          {label}
-        </button>
-      ))}
-    </nav>
-  );
-}
-
 function MenuSection({ menu, addToCart }) {
   return (
     <section className="section">
       <div className="section__heading">
         <p className="eyebrow">Menú</p>
         <h2>Arma tu pedido</h2>
-        <p>Todos los productos permiten quitar ingredientes y seleccionar cantidad. Los precios están listos para que los captures desde Admin.</p>
+        <p>Elige tus productos, ajusta ingredientes y manda tu pedido directo por WhatsApp.</p>
       </div>
 
       {menu.map((category) => (
@@ -324,6 +294,7 @@ function MenuSection({ menu, addToCart }) {
 function ProductCard({ item, categoryId, addToCart }) {
   const [quantity, setQuantity] = useState(1);
   const [removed, setRemoved] = useState([]);
+  const [imageIndex, setImageIndex] = useState(0);
   const [selectedOptions, setSelectedOptions] = useState(() => {
     const options = {};
     (item.options || []).forEach((option) => {
@@ -354,6 +325,9 @@ function ProductCard({ item, categoryId, addToCart }) {
 
   return (
     <article className={`product ${!item.available ? 'product--disabled' : ''}`}>
+      <div className="product-media">
+        {(item.images || []).length > 0 ? <img src={item.images[imageIndex]} alt={item.name} className="product-media__image" /> : <div className="product-media__placeholder">Imagen del producto</div>}
+      </div>
       <div className="product__top">
         <div>
           <h4>{item.name}</h4>
@@ -379,7 +353,7 @@ function ProductCard({ item, categoryId, addToCart }) {
         </div>
       )}
 
-      <div className="ingredients">
+      {(item.ingredients || []).length > 0 && <div className="ingredients">
         <p>Quitar ingredientes:</p>
         <div>
           {(item.ingredients || []).map((ingredient) => (
@@ -393,7 +367,7 @@ function ProductCard({ item, categoryId, addToCart }) {
             </button>
           ))}
         </div>
-      </div>
+      </div>}
 
       <div className="product__actions">
         <label className="qty">
@@ -562,7 +536,7 @@ function AccountSection({ profile, setProfile }) {
       <div className="panel">
         <div className="section__heading compact">
           <p className="eyebrow">Cliente</p>
-          <h2>Cuenta rápida</h2>
+          <h2>Club El Punto</h2>
           <p>Esta primera versión guarda los datos en el navegador para hacer pedidos más rápido.</p>
         </div>
         <div className="form-grid one">
@@ -581,7 +555,7 @@ function AccountSection({ profile, setProfile }) {
         </div>
       </div>
       <div className="benefits-card">
-        <p className="eyebrow">Beneficios</p>
+        <p className="eyebrow">Club El Punto</p>
         <h2>Club El Punto</h2>
         <ul>
           <li>Promos para clientes frecuentes.</li>
@@ -598,7 +572,7 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
   const [pin, setPin] = useState('');
   const [unlocked, setUnlocked] = useState(false);
   const [metrics, setMetrics] = useState(() => readStorage(STORAGE.metrics, defaultMetrics()));
-  const [newProduct, setNewProduct] = useState({ categoryId: menu[0]?.id || 'desayunos', name: '', price: '', description: '', ingredients: '' });
+  const [newProduct, setNewProduct] = useState({ categoryId: menu[0]?.id || 'desayunos', name: '', price: '', description: '', ingredients: '', images: '' });
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonDraft, setJsonDraft] = useState(JSON.stringify(menu, null, 2));
 
@@ -635,6 +609,7 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
       price: Number(newProduct.price) || 0,
       description: newProduct.description.trim(),
       ingredients: newProduct.ingredients.split(',').map((value) => value.trim()).filter(Boolean),
+      images: newProduct.images.split(',').map((value) => value.trim()).filter(Boolean),
       options: [],
       available: true
     };
@@ -642,7 +617,7 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
       ...category,
       items: [...category.items, product]
     }));
-    setNewProduct({ ...newProduct, name: '', price: '', description: '', ingredients: '' });
+    setNewProduct({ ...newProduct, name: '', price: '', description: '', ingredients: '', images: '' });
   }
 
   function resetMenu() {
@@ -744,6 +719,7 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
               <input placeholder="Precio" type="number" value={newProduct.price} onChange={(event) => setNewProduct({ ...newProduct, price: event.target.value })} />
               <input placeholder="Descripción" value={newProduct.description} onChange={(event) => setNewProduct({ ...newProduct, description: event.target.value })} />
               <input placeholder="Ingredientes separados por coma" value={newProduct.ingredients} onChange={(event) => setNewProduct({ ...newProduct, ingredients: event.target.value })} />
+              <input placeholder="Imágenes separadas por coma" value={newProduct.images} onChange={(event) => setNewProduct({ ...newProduct, images: event.target.value })} />
               <button onClick={addProduct}>Agregar</button>
             </div>
 
@@ -778,6 +754,17 @@ function Metric({ label, value }) {
       <span>{label}</span>
       <strong>{value || 0}</strong>
     </div>
+  );
+}
+
+
+function FloatingCart({ cartCount, cartTotal, setActiveSection }) {
+  return (
+    <button className="floating-cart" onClick={() => setActiveSection('pedido')} aria-label="Abrir pedido">
+      <span>🛒</span>
+      <strong>{cartCount || 0}</strong>
+      <small>{cartTotal ? formatMoney(cartTotal) : 'Sin total'}</small>
+    </button>
   );
 }
 
