@@ -160,11 +160,20 @@ function App() {
 }
 
 function Hero({ business, setActiveSection, cartCount }) {
+  const [logoError, setLogoError] = useState(false);
+
   return (
     <section className="hero">
       <div className="hero__content">
         <p className="eyebrow">Centro de Chihuahua · para llevar</p>
-        <h1>{business.name}<span>.</span></h1>
+        <div className="brand-lockup">
+          {!logoError ? (
+            <img src="/images/logo-el-punto.png" alt="Logo El Punto" className="brand-logo" onError={() => setLogoError(true)} />
+          ) : (
+            <h1>{business.name}<span>.</span></h1>
+          )}
+          <div className="brand-line" aria-hidden="true" />
+        </div>
         <p className="subtitle">{business.subtitle}</p>
         <p className="hero__copy">Desayunos, birria y bebidas listos para pedir por WhatsApp. Escoge recoger o domicilio, ajusta ingredientes y manda tu orden en un mensaje.</p>
         <div className="hero__actions">
@@ -173,7 +182,7 @@ function Hero({ business, setActiveSection, cartCount }) {
         </div>
       </div>
       <div className="hero__card">
-        <div className="pin">●</div>
+        <div className="pin" aria-hidden="true">⌖</div>
         <h2>Pedido rápido</h2>
         <p>Recoger o domicilio</p>
         <p>Pago en efectivo, tarjeta o transferencia</p>
