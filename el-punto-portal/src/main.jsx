@@ -16,6 +16,14 @@ const STORAGE = {
 const ADMIN_PIN = '1234';
 const MAPS_LINK = 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7';
 const identity = (value) => value;
+const PAYMENT_METHODS = [
+  { value: 'efectivo', label: 'Efectivo' },
+  { value: 'tarjeta', label: 'Tarjeta' },
+  { value: 'transferencia', label: 'Transferencia' },
+  { value: 'pago_en_linea', label: 'Pago en línea' },
+  { value: 'criptomonedas', label: 'Criptomonedas' }
+];
+
 
 function readStorage(key, fallback) {
   try {
@@ -80,6 +88,31 @@ function usePersistedState(key, fallback, normalize = identity) {
 function formatMoney(value) {
   if (!value) return 'Precio por confirmar';
   return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value);
+}
+
+function paymentLabel(value) {
+  return PAYMENT_METHODS.find((method) => method.value === value)?.label || 'Efectivo';
+}
+
+function cryptoWalletsFromBusiness(business) {
+  if (Array.isArray(business.cryptoWallets)) return business.cryptoWallets.filter(Boolean);
+  return String(business.cryptoWallets || '')
+    .split('\n')
+    .map((wallet) => wallet.trim())
+    .filter(Boolean);
+}
+
+function clearAdminSession() {
+  const keys = ['adminAuthenticated', 'adminPin', 'isAdmin', 'adminSession'];
+  keys.forEach((key) => {
+    localStorage.removeItem(key);
+    sessionStorage.removeItem(key);
+  });
+}
+
+function goHomeFromAdmin() {
+  clearAdminSession();
+  window.location.assign('/');
 }
 
 function createStableUuid() {
@@ -217,6 +250,9 @@ function App() {
   if (isAdminPath) {
     return (
       <main className="admin-route">
+        <div className="admin-route__bar">
+          <button className="button--ghost admin-exit" onClick={goHomeFromAdmin}>Salir del admin</button>
+        </div>
         <AdminSection menu={menu} setMenu={setMenu} business={business} setBusiness={setBusiness} productImages={productImages} refreshProductImages={refreshProductImages} productImagesError={productImagesError} />
       </main>
     );
@@ -486,11 +522,14 @@ function ProductCard({ item, categoryId, addToCart, images }) {
 
 function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, profile, setProfile }) {
   const [orderType, setOrderType] = useState('recoger');
-  const [payment, setPayment] = useState('Efectivo');
+  const [payment, setPayment] = useState('efectivo');
   const [address, setAddress] = useState('');
   const [geoLink, setGeoLink] = useState('');
   const [notes, setNotes] = useState('');
   const [isLocating, setIsLocating] = useState(false);
+  const selectedPaymentLabel = paymentLabel(payment);
+  const isOnlinePaymentReady = Boolean(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY) && cartTotal > 0;
+  const cryptoWallets = cryptoWalletsFromBusiness(business);
 
   function getLocation() {
     if (!navigator.geolocation) {
@@ -529,8 +568,13 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
       : '';
 
     const totalText = cartTotal ? formatMoney(cartTotal) : 'Por confirmar';
+    const paymentNote = payment === 'pago_en_linea'
+      ? '\nPago en línea seleccionado. Pendiente de confirmación.'
+      : payment === 'criptomonedas'
+        ? '\nPago con criptomonedas seleccionado. Solicito datos de pago.'
+        : '';
 
-    return `Hola, quiero hacer un pedido en El Punto.\n\nOrden: ${orderNumber}\nNombre: ${profile.name || 'Cliente'}\nTeléfono: ${profile.phone || 'No capturado'}\nMétodo de pago: ${payment}\n${orderType === 'domicilio' ? 'Tipo: A domicilio' : 'Tipo: Para recoger'}${locationText}\n\nPedido:\n${items}\n\nTotal estimado: ${totalText}\nNotas: ${notes || 'Sin notas'}\n\nPor favor confírmenme disponibilidad y tiempo estimado.`;
+    return `Hola, quiero hacer un pedido en El Punto.\n\nOrden: ${orderNumber}\nNombre: ${profile.name || 'Cliente'}\nTeléfono: ${profile.phone || 'No capturado'}\nMétodo de pago: ${selectedPaymentLabel}${paymentNote}\n${orderType === 'domicilio' ? 'Tipo: A domicilio' : 'Tipo: Para recoger'}${locationText}\n\nPedido:\n${items}\n\nTotal estimado: ${totalText}\nNotas: ${notes || 'Sin notas'}\n\nPor favor confírmenme disponibilidad y tiempo estimado.`;
   }
 
   function sendWhatsApp() {
@@ -602,12 +646,33 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
           <label>
             Método de pago
             <select value={payment} onChange={(event) => setPayment(event.target.value)}>
-              <option>Efectivo</option>
-              <option>Tarjeta</option>
-              <option>Transferencia</option>
+              {PAYMENT_METHODS.map((method) => (
+                <option key={method.value} value={method.value}>{method.label}</option>
+              ))}
             </select>
           </label>
         </div>
+
+        {payment === 'pago_en_linea' && (
+          <div className="payment-info-card">
+            <p>Paga de forma segura con tarjeta antes de enviar tu pedido.</p>
+            {!isOnlinePaymentReady && (
+              <p className="small-note">Pago en línea todavía no está configurado o el pedido requiere confirmar precio por WhatsApp.</p>
+            )}
+            <button className="button--ghost" disabled={!isOnlinePaymentReady}>Pagar con tarjeta</button>
+          </div>
+        )}
+
+        {payment === 'criptomonedas' && (
+          <div className="payment-info-card">
+            <p>Te enviaremos los datos de pago por WhatsApp para confirmar tu pedido.</p>
+            {cryptoWallets.length > 0 && (
+              <ul className="wallet-list">
+                {cryptoWallets.map((wallet) => <li key={wallet}>{wallet}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
 
         <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={MAPS_LINK} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
 
