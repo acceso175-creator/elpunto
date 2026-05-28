@@ -14,6 +14,7 @@ const STORAGE = {
 
 const ADMIN_PIN = '1234';
 const MAPS_LINK = 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7';
+const identity = (value) => value;
 
 function readStorage(key, fallback) {
   try {
@@ -28,9 +29,49 @@ function writeStorage(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
-function usePersistedState(key, fallback) {
-  const [state, setState] = useState(() => readStorage(key, fallback));
-  useEffect(() => writeStorage(key, state), [key, state]);
+function splitCsv(value) {
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeIngredients(ingredients) {
+  if (!Array.isArray(ingredients)) return [];
+  return ingredients
+    .map((ingredient) => {
+      if (typeof ingredient === 'string') {
+        return { name: ingredient, removable: true };
+      }
+      return {
+        name: String(ingredient?.name || '').trim(),
+        removable: ingredient?.removable !== false
+      };
+    })
+    .filter((ingredient) => ingredient.name);
+}
+
+function normalizeMenu(menu) {
+  if (!Array.isArray(menu)) return normalizeMenu(initialMenu);
+  return menu.map((category) => ({
+    ...category,
+    items: (category.items || []).map((item) => ({
+      ...item,
+      images: Array.isArray(item.images) ? item.images : [],
+      ingredients: normalizeIngredients(item.ingredients)
+    }))
+  }));
+}
+
+function removableIngredientNames(ingredients) {
+  return normalizeIngredients(ingredients)
+    .filter((ingredient) => ingredient.removable)
+    .map((ingredient) => ingredient.name);
+}
+
+function usePersistedState(key, fallback, normalize = identity) {
+  const [state, setState] = useState(() => normalize(readStorage(key, fallback)));
+  useEffect(() => writeStorage(key, normalize(state)), [key, normalize, state]);
   return [state, setState];
 }
 
@@ -96,11 +137,12 @@ function createOrderNumber() {
 }
 
 function App() {
-  const [menu, setMenu] = usePersistedState(STORAGE.menu, initialMenu);
+  const [menu, setMenu] = usePersistedState(STORAGE.menu, normalizeMenu(initialMenu), normalizeMenu);
   const [business, setBusiness] = usePersistedState(STORAGE.business, businessDefaults);
   const [cart, setCart] = usePersistedState(STORAGE.cart, []);
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
-  const [activeSection, setActiveSection] = useState('inicio');
+  const isAdminPath = window.location.pathname === '/admin';
+  const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : 'inicio');
 
   useEffect(() => {
     ensureSessionMetric();
@@ -122,10 +164,34 @@ function App() {
     setCart([]);
   }
 
+
+  function navigateTo(section) {
+    if (isAdminPath) return;
+    const sectionIds = {
+      inicio: 'inicio',
+      ubicacion: 'ubicacion',
+      menu: 'menu',
+      pedido: 'pedido',
+      cuenta: 'club-el-punto'
+    };
+    setActiveSection(section === 'ubicacion' ? 'inicio' : section);
+    window.setTimeout(() => {
+      document.getElementById(sectionIds[section] || section)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }
+
+  if (isAdminPath) {
+    return (
+      <main className="admin-route">
+        <AdminSection menu={menu} setMenu={setMenu} business={business} setBusiness={setBusiness} />
+      </main>
+    );
+  }
+
   return (
     <main>
-      <Header business={business} setActiveSection={setActiveSection} />
-      <Hero setActiveSection={setActiveSection} />
+      <Header navigateTo={navigateTo} />
+      <Hero navigateTo={navigateTo} />
       <LocationSection />
       
       {activeSection === 'inicio' && <HomeImages />}
@@ -150,47 +216,32 @@ function App() {
         <AccountSection profile={profile} setProfile={setProfile} />
       )}
 
-      {activeSection === 'admin' && (
-        <AdminSection
-          menu={menu}
-          setMenu={setMenu}
-          business={business}
-          setBusiness={setBusiness}
-        />
-      )}
 
       <Footer business={business} />
-      <FloatingCart cartCount={cartCount} cartTotal={cartTotal} setActiveSection={setActiveSection} />
+      <FloatingCart cartCount={cartCount} cartTotal={cartTotal} navigateTo={navigateTo} />
     </main>
   );
 }
 
 
-function Header({ business, setActiveSection }) {
+function Header({ navigateTo }) {
   const [logoError, setLogoError] = useState(false);
   const links = [
     ['inicio', 'Inicio'],
     ['ubicacion', 'Ubicación'],
     ['menu', 'Menú'],
     ['pedido', 'Pedido'],
-    ['cuenta', 'Club El Punto'],
-    ['admin', 'Admin']
+    ['cuenta', 'Club El Punto']
   ];
 
   function handleHeaderNav(target) {
-    if (target === 'ubicacion') {
-      setActiveSection('inicio');
-      setTimeout(() => {
-        document.getElementById('ubicacion')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 0);
-      return;
-    }
-    setActiveSection(target);
+    navigateTo(target);
   }
+
 
   return (
     <header className="site-header">
-      <button className="brand-mini" onClick={() => setActiveSection('inicio')}>
+      <button className="brand-mini" onClick={() => navigateTo('inicio')}>
         {!logoError ? <img src="/images/logo-el-punto.png" alt="Logo El Punto" onError={() => setLogoError(true)} /> : <span>El Punto</span>}
       </button>
       <nav className="site-nav">
@@ -198,7 +249,7 @@ function Header({ business, setActiveSection }) {
           <button key={id} className="site-nav__link" onClick={() => handleHeaderNav(id)}>{label}</button>
         ))}
       </nav>
-      <button className="site-header__cta" onClick={() => setActiveSection('menu')}>Hacer pedido</button>
+      <button className="site-header__cta" onClick={() => navigateTo('menu')}>Hacer pedido</button>
     </header>
   );
 }
@@ -219,16 +270,16 @@ function HomeImages() {
   );
 }
 
-function Hero({ setActiveSection }) {
+function Hero({ navigateTo }) {
   return (
-    <section className="hero">
+    <section id="inicio" className="hero scroll-target">
       <div className="hero__content">
         <p className="eyebrow">Centro de Chihuahua · para llevar</p>
         <h1>El Punto<span>.</span></h1>
         <p className="subtitle">Food To Go</p>
         <p className="hero__copy">Desayunos, comida rápida y antojos listos para llevar.</p>
         <div className="hero__actions">
-          <button onClick={() => setActiveSection('menu')}>Ver menú</button>
+          <button onClick={() => navigateTo('menu')}>Ver menú</button>
         </div>
       </div>
       <div className="hero__card">
@@ -245,7 +296,7 @@ function Hero({ setActiveSection }) {
 
 function LocationSection() {
   return (
-    <section id="ubicacion" className="section">
+    <section id="ubicacion" className="section scroll-target">
       <div className="location-card">
         <div>
           <p className="eyebrow">Ubicación</p>
@@ -267,7 +318,7 @@ function LocationSection() {
 
 function MenuSection({ menu, addToCart }) {
   return (
-    <section className="section">
+    <section id="menu" className="section scroll-target">
       <div className="section__heading">
         <p className="eyebrow">Menú</p>
         <h2>Arma tu pedido</h2>
@@ -295,6 +346,7 @@ function ProductCard({ item, categoryId, addToCart }) {
   const [quantity, setQuantity] = useState(1);
   const [removed, setRemoved] = useState([]);
   const [imageIndex, setImageIndex] = useState(0);
+  const removableIngredients = removableIngredientNames(item.ingredients);
   const [selectedOptions, setSelectedOptions] = useState(() => {
     const options = {};
     (item.options || []).forEach((option) => {
@@ -326,7 +378,20 @@ function ProductCard({ item, categoryId, addToCart }) {
   return (
     <article className={`product ${!item.available ? 'product--disabled' : ''}`}>
       <div className="product-media">
-        {(item.images || []).length > 0 ? <img src={item.images[imageIndex]} alt={item.name} className="product-media__image" /> : <div className="product-media__placeholder">Imagen del producto</div>}
+        {(item.images || []).length > 0 ? (
+          <>
+            <img src={item.images[imageIndex]} alt={item.name} className="product-media__image" />
+            {item.images.length > 1 && (
+              <div className="product-media__controls">
+                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex - 1 + item.images.length) % item.images.length)}>‹</button>
+                <span>{imageIndex + 1}/{item.images.length}</span>
+                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex + 1) % item.images.length)}>›</button>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="product-media__placeholder">Imagen del producto</div>
+        )}
       </div>
       <div className="product__top">
         <div>
@@ -353,10 +418,10 @@ function ProductCard({ item, categoryId, addToCart }) {
         </div>
       )}
 
-      {(item.ingredients || []).length > 0 && <div className="ingredients">
+      {removableIngredients.length > 0 && <div className="ingredients">
         <p>Quitar ingredientes:</p>
         <div>
-          {(item.ingredients || []).map((ingredient) => (
+          {removableIngredients.map((ingredient) => (
             <button
               type="button"
               key={ingredient}
@@ -414,7 +479,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
       const opts = Object.entries(item.selectedOptions || {})
         .map(([key, value]) => `${key}: ${value}`)
         .join(', ');
-      const removed = item.removedIngredients?.length ? ` | Quitar: ${item.removedIngredients.join(', ')}` : '';
+      const removed = item.removedIngredients?.length ? ` | Sin: ${item.removedIngredients.join(', ')}` : '';
       const linePrice = calculateLine(item) * item.quantity;
       const priceText = linePrice ? ` | Subtotal: ${formatMoney(linePrice)}` : '';
       return `${index + 1}. ${item.quantity} x ${item.name}${opts ? ` (${opts})` : ''}${removed}${priceText}`;
@@ -445,7 +510,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
   }
 
   return (
-    <section className="section order-layout">
+    <section id="pedido" className="section order-layout scroll-target">
       <div className="panel">
         <div className="section__heading compact">
           <p className="eyebrow">Pedido</p>
@@ -532,7 +597,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
 
 function AccountSection({ profile, setProfile }) {
   return (
-    <section className="section account-grid">
+    <section id="club-el-punto" className="section account-grid scroll-target">
       <div className="panel">
         <div className="section__heading compact">
           <p className="eyebrow">Cliente</p>
@@ -601,6 +666,54 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
     }));
   }
 
+  function moveItem(sourceCategoryId, itemId, targetCategoryId) {
+    if (sourceCategoryId === targetCategoryId) return;
+    setMenu((current) => {
+      const sourceCategory = current.find((category) => category.id === sourceCategoryId);
+      const itemToMove = sourceCategory?.items.find((item) => item.id === itemId);
+      if (!itemToMove) return current;
+      return current.map((category) => {
+        if (category.id === sourceCategoryId) {
+          return { ...category, items: category.items.filter((item) => item.id !== itemId) };
+        }
+        if (category.id === targetCategoryId) {
+          return { ...category, items: [...category.items, itemToMove] };
+        }
+        return category;
+      });
+    });
+  }
+
+  function updateIngredient(categoryId, itemId, ingredientIndex, patch) {
+    setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
+      ...category,
+      items: category.items.map((item) => item.id !== itemId ? item : {
+        ...item,
+        ingredients: normalizeIngredients(item.ingredients).map((ingredient, index) => index === ingredientIndex ? { ...ingredient, ...patch } : ingredient)
+      })
+    }));
+  }
+
+  function addIngredient(categoryId, itemId) {
+    setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
+      ...category,
+      items: category.items.map((item) => item.id !== itemId ? item : {
+        ...item,
+        ingredients: [...normalizeIngredients(item.ingredients), { name: '', removable: true }]
+      })
+    }));
+  }
+
+  function deleteIngredient(categoryId, itemId, ingredientIndex) {
+    setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
+      ...category,
+      items: category.items.map((item) => item.id !== itemId ? item : {
+        ...item,
+        ingredients: normalizeIngredients(item.ingredients).filter((_, index) => index !== ingredientIndex)
+      })
+    }));
+  }
+
   function addProduct() {
     if (!newProduct.name.trim()) return alert('Agrega nombre del producto.');
     const product = {
@@ -608,8 +721,8 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
       name: newProduct.name.trim(),
       price: Number(newProduct.price) || 0,
       description: newProduct.description.trim(),
-      ingredients: newProduct.ingredients.split(',').map((value) => value.trim()).filter(Boolean),
-      images: newProduct.images.split(',').map((value) => value.trim()).filter(Boolean),
+      ingredients: splitCsv(newProduct.ingredients).map((name) => ({ name, removable: true })),
+      images: splitCsv(newProduct.images),
       options: [],
       available: true
     };
@@ -622,14 +735,14 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
 
   function resetMenu() {
     if (!confirm('¿Seguro que quieres regresar al menú inicial?')) return;
-    setMenu(initialMenu);
-    setJsonDraft(JSON.stringify(initialMenu, null, 2));
+    setMenu(normalizeMenu(initialMenu));
+    setJsonDraft(JSON.stringify(normalizeMenu(initialMenu), null, 2));
   }
 
   function saveJsonMenu() {
     try {
       const parsed = JSON.parse(jsonDraft);
-      setMenu(parsed);
+      setMenu(normalizeMenu(parsed));
       setJsonMode(false);
     } catch {
       alert('El JSON tiene un error. Revísalo antes de guardar.');
@@ -638,7 +751,7 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
 
   if (!unlocked) {
     return (
-      <section className="section admin-login">
+      <section id="admin" className="section admin-login">
         <div className="panel narrow">
           <p className="eyebrow">Admin</p>
           <h2>Panel interno</h2>
@@ -655,7 +768,7 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
   }
 
   return (
-    <section className="section admin-grid">
+    <section id="admin" className="section admin-grid">
       <div className="panel">
         <div className="section__heading compact">
           <p className="eyebrow">Admin</p>
@@ -727,16 +840,60 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
               <div key={category.id} className="admin-category">
                 <h3>{category.name}</h3>
                 {category.items.map((item) => (
-                  <div key={item.id} className="admin-product-row">
-                    <div>
-                      <strong>{item.name}</strong>
-                      <p>{item.description}</p>
+                  <div key={item.id} className="admin-product-editor">
+                    <div className="admin-product-editor__grid">
+                      <label>
+                        Nombre
+                        <input value={item.name} onChange={(event) => updateItem(category.id, item.id, { name: event.target.value })} />
+                      </label>
+                      <label>
+                        Precio
+                        <input type="number" value={item.price || ''} placeholder="Precio" onChange={(event) => updateItem(category.id, item.id, { price: Number(event.target.value) || 0 })} />
+                      </label>
+                      <label>
+                        Categoría
+                        <select value={category.id} onChange={(event) => moveItem(category.id, item.id, event.target.value)}>
+                          {menu.map((categoryOption) => <option key={categoryOption.id} value={categoryOption.id}>{categoryOption.name}</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        Imágenes / rutas separadas por coma
+                        <input value={(item.images || []).join(', ')} onChange={(event) => updateItem(category.id, item.id, { images: splitCsv(event.target.value) })} placeholder="/images/productos/torta-huevo-1.jpg" />
+                      </label>
                     </div>
-                    <input type="number" value={item.price || ''} placeholder="Precio" onChange={(event) => updateItem(category.id, item.id, { price: Number(event.target.value) || 0 })} />
-                    <button className={item.available ? 'status status--ok' : 'status status--off'} onClick={() => updateItem(category.id, item.id, { available: !item.available })}>
-                      {item.available ? 'Disponible' : 'Agotado'}
-                    </button>
-                    <button className="button--danger" onClick={() => deleteItem(category.id, item.id)}>Quitar</button>
+
+                    <label>
+                      Descripción
+                      <textarea value={item.description || ''} onChange={(event) => updateItem(category.id, item.id, { description: event.target.value })} />
+                    </label>
+
+                    <div className="admin-ingredients">
+                      <div className="admin-subheader">
+                        <strong>Ingredientes</strong>
+                        <button type="button" className="button--ghost" onClick={() => addIngredient(category.id, item.id)}>Agregar ingrediente</button>
+                      </div>
+                      {normalizeIngredients(item.ingredients).length === 0 && <p className="small-note">Sin ingredientes capturados.</p>}
+                      {normalizeIngredients(item.ingredients).map((ingredient, ingredientIndex) => (
+                        <div key={`${item.id}-${ingredientIndex}`} className="ingredient-editor">
+                          <label>
+                            Ingrediente
+                            <input value={ingredient.name} onChange={(event) => updateIngredient(category.id, item.id, ingredientIndex, { name: event.target.value })} placeholder="huevo" />
+                          </label>
+                          <label className="checkbox-line">
+                            <input type="checkbox" checked={ingredient.removable} onChange={(event) => updateIngredient(category.id, item.id, ingredientIndex, { removable: event.target.checked })} />
+                            Cliente puede quitarlo
+                          </label>
+                          <button type="button" className="button--danger" onClick={() => deleteIngredient(category.id, item.id, ingredientIndex)}>Eliminar</button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="admin-product-editor__actions">
+                      <button className={item.available ? 'status status--ok' : 'status status--off'} onClick={() => updateItem(category.id, item.id, { available: !item.available })}>
+                        {item.available ? 'Disponible' : 'Agotado'}
+                      </button>
+                      <button className="button--danger" onClick={() => deleteItem(category.id, item.id)}>Quitar producto</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -758,9 +915,9 @@ function Metric({ label, value }) {
 }
 
 
-function FloatingCart({ cartCount, cartTotal, setActiveSection }) {
+function FloatingCart({ cartCount, cartTotal, navigateTo }) {
   return (
-    <button className="floating-cart" onClick={() => setActiveSection('pedido')} aria-label="Abrir pedido">
+    <button className="floating-cart" onClick={() => navigateTo('pedido')} aria-label="Abrir pedido">
       <span>🛒</span>
       <strong>{cartCount || 0}</strong>
       <small>{cartTotal ? formatMoney(cartTotal) : 'Sin total'}</small>
