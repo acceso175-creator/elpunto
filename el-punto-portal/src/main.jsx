@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { businessDefaults, initialMenu } from './menuData.js';
+import { isSupabaseConfigured, listProductImages } from './lib/supabaseClient.js';
 import './styles.css';
 
 const STORAGE = {
@@ -57,7 +58,8 @@ function normalizeMenu(menu) {
     ...category,
     items: (category.items || []).map((item) => ({
       ...item,
-      images: Array.isArray(item.images) ? item.images : [],
+      supabaseProductId: isUuid(item.supabaseProductId) ? item.supabaseProductId : (isUuid(item.id) ? item.id : createStableUuid()),
+      images: Array.isArray(item.images) ? item.images.filter((image) => typeof image === 'string' && !image.startsWith('data:')) : [],
       ingredients: normalizeIngredients(item.ingredients)
     }))
   }));
@@ -78,6 +80,14 @@ function usePersistedState(key, fallback, normalize = identity) {
 function formatMoney(value) {
   if (!value) return 'Precio por confirmar';
   return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value);
+}
+
+function createStableUuid() {
+  return crypto.randomUUID ? crypto.randomUUID() : `00000000-0000-4000-8000-${String(Date.now()).slice(-12).padStart(12, '0')}`;
+}
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
 }
 
 function slugify(text) {
@@ -143,6 +153,8 @@ function App() {
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
   const isAdminPath = window.location.pathname === '/admin';
   const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : 'inicio');
+  const [productImages, setProductImages] = useState({});
+  const [productImagesError, setProductImagesError] = useState('');
 
   useEffect(() => {
     ensureSessionMetric();
@@ -150,6 +162,7 @@ function App() {
 
   const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + calculateLine(item) * item.quantity, 0), [cart]);
   const cartCount = useMemo(() => cart.reduce((sum, item) => sum + item.quantity, 0), [cart]);
+  const supabaseProductIds = useMemo(() => menu.flatMap((category) => category.items.map((item) => item.supabaseProductId || item.id).filter(Boolean)), [menu]);
 
   function addToCart(payload) {
     setCart((current) => [...current, { ...payload, cartId: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}` }]);
@@ -164,6 +177,27 @@ function App() {
     setCart([]);
   }
 
+  async function refreshProductImages() {
+    if (!isSupabaseConfigured || !supabaseProductIds.length) {
+      setProductImages({});
+      return;
+    }
+    try {
+      const records = await listProductImages(supabaseProductIds);
+      const grouped = records.reduce((acc, image) => {
+        acc[image.product_id] = [...(acc[image.product_id] || []), image];
+        return acc;
+      }, {});
+      setProductImages(grouped);
+      setProductImagesError('');
+    } catch (error) {
+      setProductImagesError(error.message);
+    }
+  }
+
+  useEffect(() => {
+    refreshProductImages();
+  }, [supabaseProductIds.join('|')]);
 
   function navigateTo(section) {
     if (isAdminPath) return;
@@ -183,7 +217,7 @@ function App() {
   if (isAdminPath) {
     return (
       <main className="admin-route">
-        <AdminSection menu={menu} setMenu={setMenu} business={business} setBusiness={setBusiness} />
+        <AdminSection menu={menu} setMenu={setMenu} business={business} setBusiness={setBusiness} productImages={productImages} refreshProductImages={refreshProductImages} productImagesError={productImagesError} />
       </main>
     );
   }
@@ -197,7 +231,7 @@ function App() {
       {activeSection === 'inicio' && <HomeImages />}
 
       {activeSection === 'menu' && (
-        <MenuSection menu={menu} addToCart={addToCart} />
+        <MenuSection menu={menu} addToCart={addToCart} productImages={productImages} />
       )}
 
       {activeSection === 'pedido' && (
@@ -304,7 +338,7 @@ function LocationSection() {
           <p className="location-copy">Pasa por tu pedido o mándanos tu ubicación para entrega.</p>
           <div className="location-actions">
             <a className="location-link location-link--primary" href={MAPS_LINK} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
-                      </div>
+          </div>
         </div>
         <div className="map-placeholder" aria-label="Mapa del local">
           <span className="map-pin" aria-hidden="true">📍</span>
@@ -316,7 +350,7 @@ function LocationSection() {
   );
 }
 
-function MenuSection({ menu, addToCart }) {
+function MenuSection({ menu, addToCart, productImages }) {
   return (
     <section id="menu" className="section scroll-target">
       <div className="section__heading">
@@ -333,7 +367,7 @@ function MenuSection({ menu, addToCart }) {
           </div>
           <div className="grid">
             {category.items.map((item) => (
-              <ProductCard key={item.id} item={item} categoryId={category.id} addToCart={addToCart} />
+              <ProductCard key={item.id} item={item} categoryId={category.id} addToCart={addToCart} images={productImages[item.supabaseProductId || item.id] || []} />
             ))}
           </div>
         </div>
@@ -342,10 +376,11 @@ function MenuSection({ menu, addToCart }) {
   );
 }
 
-function ProductCard({ item, categoryId, addToCart }) {
+function ProductCard({ item, categoryId, addToCart, images }) {
   const [quantity, setQuantity] = useState(1);
   const [removed, setRemoved] = useState([]);
   const [imageIndex, setImageIndex] = useState(0);
+  const imageUrls = images.map((image) => image.image_url);
   const removableIngredients = removableIngredientNames(item.ingredients);
   const [selectedOptions, setSelectedOptions] = useState(() => {
     const options = {};
@@ -354,6 +389,10 @@ function ProductCard({ item, categoryId, addToCart }) {
     });
     return options;
   });
+
+  useEffect(() => {
+    if (imageIndex >= imageUrls.length) setImageIndex(0);
+  }, [imageIndex, imageUrls.length]);
 
   function toggleIngredient(ingredient) {
     setRemoved((current) => current.includes(ingredient)
@@ -378,14 +417,14 @@ function ProductCard({ item, categoryId, addToCart }) {
   return (
     <article className={`product ${!item.available ? 'product--disabled' : ''}`}>
       <div className="product-media">
-        {(item.images || []).length > 0 ? (
+        {imageUrls.length > 0 ? (
           <>
-            <img src={item.images[imageIndex]} alt={item.name} className="product-media__image" />
-            {item.images.length > 1 && (
+            <img src={imageUrls[imageIndex]} alt={item.name} className="product-media__image" />
+            {imageUrls.length > 1 && (
               <div className="product-media__controls">
-                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex - 1 + item.images.length) % item.images.length)}>‹</button>
-                <span>{imageIndex + 1}/{item.images.length}</span>
-                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex + 1) % item.images.length)}>›</button>
+                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex - 1 + imageUrls.length) % imageUrls.length)}>‹</button>
+                <span>{imageIndex + 1}/{imageUrls.length}</span>
+                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex + 1) % imageUrls.length)}>›</button>
               </div>
             )}
           </>
@@ -633,11 +672,11 @@ function AccountSection({ profile, setProfile }) {
   );
 }
 
-function AdminSection({ menu, setMenu, business, setBusiness }) {
+function AdminSection({ menu, setMenu, business, setBusiness, productImages, refreshProductImages, productImagesError }) {
   const [pin, setPin] = useState('');
   const [unlocked, setUnlocked] = useState(false);
   const [metrics, setMetrics] = useState(() => readStorage(STORAGE.metrics, defaultMetrics()));
-  const [newProduct, setNewProduct] = useState({ categoryId: menu[0]?.id || 'desayunos', name: '', price: '', description: '', ingredients: '', images: '' });
+  const [newProduct, setNewProduct] = useState({ categoryId: menu[0]?.id || 'desayunos', name: '', price: '', description: '', ingredients: '' });
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonDraft, setJsonDraft] = useState(JSON.stringify(menu, null, 2));
 
@@ -718,11 +757,12 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
     if (!newProduct.name.trim()) return alert('Agrega nombre del producto.');
     const product = {
       id: slugify(newProduct.name),
+      supabaseProductId: createStableUuid(),
       name: newProduct.name.trim(),
       price: Number(newProduct.price) || 0,
       description: newProduct.description.trim(),
       ingredients: splitCsv(newProduct.ingredients).map((name) => ({ name, removable: true })),
-      images: splitCsv(newProduct.images),
+      images: [],
       options: [],
       available: true
     };
@@ -730,7 +770,7 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
       ...category,
       items: [...category.items, product]
     }));
-    setNewProduct({ ...newProduct, name: '', price: '', description: '', ingredients: '', images: '' });
+    setNewProduct({ ...newProduct, name: '', price: '', description: '', ingredients: '' });
   }
 
   function resetMenu() {
@@ -832,7 +872,6 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
               <input placeholder="Precio" type="number" value={newProduct.price} onChange={(event) => setNewProduct({ ...newProduct, price: event.target.value })} />
               <input placeholder="Descripción" value={newProduct.description} onChange={(event) => setNewProduct({ ...newProduct, description: event.target.value })} />
               <input placeholder="Ingredientes separados por coma" value={newProduct.ingredients} onChange={(event) => setNewProduct({ ...newProduct, ingredients: event.target.value })} />
-              <input placeholder="Imágenes separadas por coma" value={newProduct.images} onChange={(event) => setNewProduct({ ...newProduct, images: event.target.value })} />
               <button onClick={addProduct}>Agregar</button>
             </div>
 
@@ -856,10 +895,16 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
                           {menu.map((categoryOption) => <option key={categoryOption.id} value={categoryOption.id}>{categoryOption.name}</option>)}
                         </select>
                       </label>
-                      <label>
-                        Imágenes / rutas separadas por coma
-                        <input value={(item.images || []).join(', ')} onChange={(event) => updateItem(category.id, item.id, { images: splitCsv(event.target.value) })} placeholder="/images/productos/torta-huevo-1.jpg" />
-                      </label>
+                      <div className="admin-image-slot">
+                        <ProductImageManager
+                          item={item}
+                          categoryId={category.id}
+                          images={productImages[item.supabaseProductId || item.id] || []}
+                          adminPin={pin}
+                          refreshProductImages={refreshProductImages}
+                          productImagesError={productImagesError}
+                        />
+                      </div>
                     </div>
 
                     <label>
@@ -902,6 +947,102 @@ function AdminSection({ menu, setMenu, business, setBusiness }) {
         )}
       </div>
     </section>
+  );
+}
+
+
+function ProductImageManager({ item, categoryId, images, adminPin, refreshProductImages, productImagesError }) {
+  const [uploading, setUploading] = useState(false);
+  const [message, setMessage] = useState('');
+  const productId = item.supabaseProductId || item.id;
+  const remainingSlots = Math.max(0, 5 - images.length);
+
+  async function uploadFiles(event) {
+    const files = Array.from(event.target.files || []).slice(0, remainingSlots);
+    if (!files.length) return;
+    if (!isSupabaseConfigured) {
+      setMessage('Configura VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY para usar imágenes en Supabase.');
+      event.target.value = '';
+      return;
+    }
+    setUploading(true);
+    setMessage('');
+    try {
+      for (const [fileIndex, file] of files.entries()) {
+        const formData = new FormData();
+        formData.append('adminPin', adminPin);
+        formData.append('productId', productId);
+        formData.append('category', categoryId);
+        formData.append('name', item.name || 'Producto');
+        formData.append('description', item.description || '');
+        formData.append('price', String(item.price || ''));
+        formData.append('available', String(item.available !== false));
+        formData.append('sortOrder', String(images.length + fileIndex));
+        formData.append('image', file);
+
+        const response = await fetch('/.netlify/functions/upload-product-image', {
+          method: 'POST',
+          body: formData
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'No se pudo subir la imagen.');
+      }
+      await refreshProductImages();
+      setMessage('Imagen subida a Supabase.');
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setUploading(false);
+      event.target.value = '';
+    }
+  }
+
+  async function deleteImage(image) {
+    if (!confirm('¿Eliminar esta imagen del producto?')) return;
+    setUploading(true);
+    setMessage('');
+    try {
+      const response = await fetch('/.netlify/functions/upload-product-image', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminPin, id: image.id, storage_path: image.storage_path })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'No se pudo eliminar la imagen.');
+      await refreshProductImages();
+      setMessage(result.warning || 'Imagen eliminada.');
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <div className="product-image-manager">
+      <div className="admin-subheader">
+        <strong>Imágenes Supabase</strong>
+        <span className="small-note">{images.length}/5</span>
+      </div>
+      {productImagesError && <p className="small-note warning-note">{productImagesError}</p>}
+      {!isSupabaseConfigured && <p className="small-note warning-note">Configura Supabase para cargar y mostrar imágenes reales.</p>}
+      <div className="admin-image-preview-list">
+        {images.length === 0 && <div className="admin-image-empty">Sin imágenes en Supabase</div>}
+        {images.map((image) => (
+          <div key={image.id} className="admin-image-preview">
+            <img src={image.image_url} alt={item.name} />
+            <button type="button" className="button--danger" onClick={() => deleteImage(image)} disabled={uploading}>Eliminar</button>
+          </div>
+        ))}
+      </div>
+      <label className="file-picker">
+        Subir imágenes (jpeg/png/webp, máx. 2 MB c/u)
+        <input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={uploading || remainingSlots === 0} onChange={uploadFiles} />
+      </label>
+      {remainingSlots === 0 && <p className="small-note">Máximo 5 imágenes por producto.</p>}
+      {uploading && <p className="small-note">Procesando imagen...</p>}
+      {message && <p className="small-note">{message}</p>}
+    </div>
   );
 }
 

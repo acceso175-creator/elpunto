@@ -822,3 +822,13 @@ main { padding-bottom: 6rem; }
 .admin-ingredients { display: grid; gap: 0.65rem; padding: 0.85rem; border: 1px solid var(--line); border-radius: 18px; background: var(--card); }
 .ingredient-editor { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; gap: 0.7rem; align-items: end; }
 @media (max-width: 980px) { .admin-product-editor__grid,.ingredient-editor { grid-template-columns: 1fr; } .scroll-target { scroll-margin-top: 150px; } }
+
+.product-image-manager { display: grid; gap: 0.7rem; }
+.admin-image-slot { min-width: 0; }
+.admin-image-preview-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 0.55rem; }
+.admin-image-preview,.admin-image-empty { min-height: 110px; border: 1px solid var(--line); border-radius: 16px; background: var(--bg-strong); overflow: hidden; display: grid; gap: 0.45rem; align-content: start; padding: 0.45rem; }
+.admin-image-preview img { width: 100%; height: 78px; object-fit: cover; border-radius: 12px; background: #101214; }
+.admin-image-preview button { padding: 0.45rem 0.6rem; font-size: 0.78rem; }
+.admin-image-empty { place-items: center; color: var(--muted); font-size: 0.84rem; text-align: center; }
+.file-picker input { border-style: dashed; }
+.warning-note { color: #ffd4b8; }
