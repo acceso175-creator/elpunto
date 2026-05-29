@@ -47,7 +47,7 @@ create table if not exists public.products (
   favorite boolean default false,
   badge text,
   sort_order integer default 0,
-  options jsonb default '[]'::jsonb,
+  options jsonb not null default '{}'::jsonb,
   created_at timestamptz default now(),
   updated_at timestamptz default now(),
   unique(category_id, name)
@@ -70,6 +70,11 @@ create table if not exists public.product_images (
   sort_order integer default 0,
   created_at timestamptz default now()
 );
+
+alter table public.products add column if not exists options jsonb not null default '{}'::jsonb;
+update public.products set options = '{}'::jsonb where options is null;
+alter table public.products alter column options set default '{}'::jsonb;
+alter table public.products alter column options set not null;
 
 create index if not exists products_category_sort_idx on public.products (category_id, sort_order, name);
 create index if not exists product_ingredients_product_sort_idx on public.product_ingredients (product_id, sort_order);

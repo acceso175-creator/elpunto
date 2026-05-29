@@ -51,6 +51,22 @@ export async function ensureCategory(supabase, category) {
   return data;
 }
 
+function isOptionsSchemaCacheError(error) {
+  return /options.*schema cache|schema cache.*options|Could not find.*options/i.test(error?.message || '');
+}
+
+async function productsSnapshot(supabase, includeUnavailable, includeOptions = true) {
+  const fields = includeOptions
+    ? 'id, category_id, name, description, price, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)'
+    : 'id, category_id, name, description, price, price_label, available, favorite, badge, sort_order, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)';
+  let productQuery = supabase
+    .from('products')
+    .select(fields)
+    .order('sort_order', { ascending: true });
+  if (!includeUnavailable) productQuery = productQuery.eq('available', true);
+  return productQuery;
+}
+
 export async function menuSnapshot(supabase, includeUnavailable = true) {
   let categoryQuery = supabase
     .from('categories')
@@ -59,14 +75,15 @@ export async function menuSnapshot(supabase, includeUnavailable = true) {
     .order('name', { ascending: true });
   if (!includeUnavailable) categoryQuery = categoryQuery.eq('active', true);
 
-  let productQuery = supabase
-    .from('products')
-    .select('id, category_id, name, description, price, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)')
-    .order('sort_order', { ascending: true });
-  if (!includeUnavailable) productQuery = productQuery.eq('available', true);
-
-  const [{ data: categories, error: categoriesError }, { data: products, error: productsError }] = await Promise.all([categoryQuery, productQuery]);
+  const [{ data: categories, error: categoriesError }, productResult] = await Promise.all([
+    categoryQuery,
+    productsSnapshot(supabase, includeUnavailable)
+  ]);
   if (categoriesError) throw new Error(categoriesError.message);
+  if (!productResult.error) return { categories: categories || [], products: productResult.data || [] };
+  if (!isOptionsSchemaCacheError(productResult.error)) throw new Error(productResult.error.message);
+
+  const { data: products, error: productsError } = await productsSnapshot(supabase, includeUnavailable, false);
   if (productsError) throw new Error(productsError.message);
   return { categories: categories || [], products: products || [] };
 }

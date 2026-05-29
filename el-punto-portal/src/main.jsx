@@ -161,6 +161,10 @@ function removableIngredientNames(ingredients) {
     .map((ingredient) => ingredient.name);
 }
 
+function productOptions(product) {
+  return Array.isArray(product?.options) ? product.options : [];
+}
+
 function usePersistedState(key, fallback, normalize = identity) {
   const [state, setState] = useState(() => normalize(readStorage(key, fallback)));
   useEffect(() => writeStorage(key, normalize(state)), [key, normalize, state]);
@@ -557,9 +561,10 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   const [imageIndex, setImageIndex] = useState(0);
   const imageUrls = images.map((image) => image.image_url || image.imageUrl).filter(Boolean);
   const removableIngredients = removableIngredientNames(item.ingredients);
+  const optionList = productOptions(item);
   const [selectedOptions, setSelectedOptions] = useState(() => {
     const options = {};
-    (item.options || []).forEach((option) => {
+    optionList.forEach((option) => {
       options[option.name] = option.values?.[0] || '';
     });
     return options;
@@ -616,16 +621,16 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       </div>
       <strong className="price">{item.price ? formatMoney(item.price) : (item.priceLabel || 'Precio por confirmar')}</strong>
 
-      {(item.options || []).length > 0 && (
+      {optionList.length > 0 && (
         <div className="modifiers">
-          {item.options.map((option) => (
+          {optionList.map((option) => (
             <label key={option.name}>
               {option.name}
               <select
                 value={selectedOptions[option.name] || ''}
                 onChange={(event) => setSelectedOptions((current) => ({ ...current, [option.name]: event.target.value }))}
               >
-                {option.values.map((value) => <option key={value} value={value}>{value}</option>)}
+                {(option.values || []).map((value) => <option key={value} value={value}>{value}</option>)}
               </select>
             </label>
           ))}
@@ -1131,7 +1136,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       description: newProduct.description.trim(),
       ingredients: splitCsv(newProduct.ingredients).map((name) => ({ name, removable: true })),
       images: [],
-      options: [],
+      options: {},
       available: true
     };
     const targetName = newProduct.categoryName.trim();

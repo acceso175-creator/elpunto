@@ -1,5 +1,16 @@
 import { ensureCategory, getSupabaseAdmin, json, menuSnapshot, parseBody, slugify, validateAdminPin } from './_supabaseAdmin.js';
 
+function isOptionsSchemaCacheError(error) {
+  return /options.*schema cache|schema cache.*options|Could not find.*options/i.test(error?.message || '');
+}
+
+function normalizeProductOptions(options) {
+  if (options === undefined || options === null) return {};
+  if (Array.isArray(options)) return options;
+  if (typeof options === 'object') return options;
+  return {};
+}
+
 function cleanProductPayload(product, categoryId) {
   const priceNumber = product.price === '' || product.price === null || product.price === undefined ? null : Number(product.price);
   return {
@@ -13,7 +24,7 @@ function cleanProductPayload(product, categoryId) {
     favorite: product.favorite === true,
     badge: product.badge || null,
     sort_order: Number(product.sortOrder ?? product.sort_order ?? 0),
-    options: Array.isArray(product.options) ? product.options : [],
+    options: normalizeProductOptions(product.options),
     updated_at: new Date().toISOString()
   };
 }
@@ -43,6 +54,18 @@ async function findExistingProduct(supabase, name, categoryId) {
   return data;
 }
 
+async function writeProduct(supabase, payload, includeOptions = true) {
+  const writePayload = includeOptions ? payload : Object.fromEntries(Object.entries(payload).filter(([key]) => key !== 'options'));
+  const fields = includeOptions
+    ? 'id, category_id, name, description, price, price_label, available, favorite, badge, sort_order, options'
+    : 'id, category_id, name, description, price, price_label, available, favorite, badge, sort_order';
+  return supabase
+    .from('products')
+    .upsert(writePayload, { onConflict: 'id' })
+    .select(fields)
+    .single();
+}
+
 async function upsertProduct(supabase, product, category) {
   const savedCategory = await ensureCategory(supabase, category);
   const payload = cleanProductPayload(product, savedCategory.id);
@@ -50,11 +73,10 @@ async function upsertProduct(supabase, product, category) {
   const existing = payload.id ? null : await findExistingProduct(supabase, payload.name, savedCategory.id);
   if (existing?.id) payload.id = existing.id;
 
-  const { data, error } = await supabase
-    .from('products')
-    .upsert(payload, { onConflict: 'id' })
-    .select('id, category_id, name, description, price, price_label, available, favorite, badge, sort_order, options')
-    .single();
+  let { data, error } = await writeProduct(supabase, payload);
+  if (error && isOptionsSchemaCacheError(error)) {
+    ({ data, error } = await writeProduct(supabase, payload, false));
+  }
   if (error) throw new Error(error.message);
   const ingredients = await replaceIngredients(supabase, data.id, product.ingredients);
   return { ...data, product_ingredients: ingredients };
