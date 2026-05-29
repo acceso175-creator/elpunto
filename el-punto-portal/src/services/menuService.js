@@ -72,6 +72,7 @@ function productFromRow(row, category, index = 0) {
   return {
     id: row.id,
     supabaseProductId: row.id,
+    isSupabaseProduct: true,
     name: row.name,
     description: row.description || '',
     category: category?.name || row.category_name || '',
@@ -186,6 +187,10 @@ export async function getMenuData() {
   }
   try {
     const [categories, products, business] = await Promise.all([getCategories(), getProducts(), getBusinessSettings()]);
+    if (!products.length) {
+      localWarning('Supabase está configurado, pero todavía no hay productos disponibles en public.products.');
+      return { menu: initialMenu, business, source: 'local', needsMigration: true };
+    }
     return { menu: menuFromRows(categories, products), business, source: 'supabase' };
   } catch (error) {
     localWarning(error.message);

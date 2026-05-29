@@ -147,7 +147,8 @@ function normalizeMenu(menu) {
     description: category.description || categoryDescription(category.name),
     items: (category.items || []).map((item) => ({
       ...item,
-      supabaseProductId: isUuid(item.supabaseProductId) ? item.supabaseProductId : (isUuid(item.id) ? item.id : createStableUuid()),
+      isSupabaseProduct: item.isSupabaseProduct === true,
+      supabaseProductId: item.isSupabaseProduct === true && isUuid(item.supabaseProductId || item.id) ? (item.supabaseProductId || item.id) : undefined,
       images: Array.isArray(item.images) ? item.images.filter((image) => typeof image === 'string' && !image.startsWith('data:')) : [],
       ingredients: normalizeIngredients(item.ingredients)
     }))
@@ -202,6 +203,14 @@ function createStableUuid() {
 
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
+function isSupabaseBackedProduct(item) {
+  return item?.isSupabaseProduct === true && isUuid(item?.supabaseProductId || item?.id);
+}
+
+function productImageKey(item) {
+  return isSupabaseBackedProduct(item) ? (item.supabaseProductId || item.id) : '';
 }
 
 function slugify(text) {
@@ -281,13 +290,13 @@ function App() {
       if (!isSupabaseConfigured) return;
       const result = await getMenuData();
       if (cancelled) return;
+      if (result.business) setBusiness((current) => ({ ...current, ...result.business }));
       if (result.source === 'supabase') {
         setMenu(normalizeMenu(result.menu));
-        setBusiness((current) => ({ ...current, ...result.business }));
         const grouped = {};
         result.menu.forEach((category) => {
           category.items.forEach((item) => {
-            if (item.images?.length) grouped[item.supabaseProductId || item.id] = item.images;
+            if (item.images?.length && productImageKey(item)) grouped[productImageKey(item)] = item.images;
           });
         });
         setProductImages(grouped);
@@ -300,7 +309,7 @@ function App() {
 
   const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + calculateLine(item) * item.quantity, 0), [cart]);
   const cartCount = useMemo(() => cart.reduce((sum, item) => sum + item.quantity, 0), [cart]);
-  const supabaseProductIds = useMemo(() => menu.flatMap((category) => category.items.map((item) => item.supabaseProductId || item.id).filter(Boolean)), [menu]);
+  const supabaseProductIds = useMemo(() => menu.flatMap((category) => category.items.map(productImageKey).filter(Boolean)), [menu]);
 
   function addToCart(payload) {
     setCart((current) => [...current, { ...payload, cartId: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}` }]);
@@ -533,7 +542,7 @@ function MenuSection({ menu, addToCart, productImages }) {
           </div>
           <div className="grid">
             {category.items.map((item) => (
-              <ProductCard key={item.id} item={item} categoryId={category.id} addToCart={addToCart} images={productImages[item.supabaseProductId || item.id] || []} />
+              <ProductCard key={item.id} item={item} categoryId={category.id} addToCart={addToCart} images={productImages[productImageKey(item)] || []} />
             ))}
           </div>
         </div>
@@ -904,6 +913,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       setDataSource('supabase-admin');
       setAdminStatus('Menú sincronizado con Supabase.');
       await refreshProductImages();
+      return snapshot;
     } catch (error) {
       setAdminStatus(error.message);
     }
@@ -914,15 +924,17 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   }, [unlocked]);
 
   async function persistProduct(category, product, method = 'PATCH') {
-    if (!isSupabaseConfigured) return;
+    if (!isSupabaseConfigured) return null;
     try {
       const snapshot = await adminRequest('admin-products', { method, pin, body: { product, category } });
       setMenu(menuFromAdminSnapshot(snapshot));
       setDataSource('supabase-admin');
       setAdminStatus('Cambio guardado en Supabase.');
       await refreshProductImages();
+      return snapshot;
     } catch (error) {
       setAdminStatus(error.message);
+      throw error;
     }
   }
 
@@ -950,12 +962,12 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
 
   async function migrateLocalMenu() {
     if (!isSupabaseConfigured) return alert('Configura Supabase antes de migrar.');
-    if (!confirm('¿Migrar productos locales a Supabase evitando duplicados por nombre/categoría?')) return;
+    if (!confirm('¿Migrar menú local a Supabase evitando duplicados por nombre/categoría?')) return;
     try {
       const snapshot = await adminRequest('admin-products', { method: 'POST', pin, body: { action: 'migrate', menu } });
       setMenu(menuFromAdminSnapshot(snapshot));
       setDataSource('supabase-admin');
-      setAdminStatus(`Migración completada: ${snapshot.count || 0} productos procesados.`);
+      setAdminStatus('Menú migrado a Supabase correctamente.');
     } catch (error) {
       setAdminStatus(error.message);
     }
@@ -979,8 +991,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       ...category,
       items: category.items.filter((item) => item.id !== itemId)
     }));
-    if (isSupabaseConfigured && product) {
-      adminRequest('admin-products', { method: 'DELETE', pin, body: { id: product.supabaseProductId || product.id } })
+    if (isSupabaseConfigured && isSupabaseBackedProduct(product)) {
+      adminRequest('admin-products', { method: 'DELETE', pin, body: { id: productImageKey(product) } })
         .then((snapshot) => setMenu(menuFromAdminSnapshot(snapshot)))
         .catch((error) => setAdminStatus(error.message));
     }
@@ -1113,7 +1125,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     if (!newProduct.name.trim()) return alert('Agrega nombre del producto.');
     const product = {
       id: slugify(newProduct.name),
-      supabaseProductId: createStableUuid(),
+      isSupabaseProduct: false,
       name: newProduct.name.trim(),
       price: Number(newProduct.price) || 0,
       description: newProduct.description.trim(),
@@ -1268,7 +1280,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           </div>
           <div className="admin-actions">
             <button className="button--ghost" onClick={reloadAdminMenu}>Recargar Supabase</button>
-            <button className="button--ghost" onClick={migrateLocalMenu}>Migrar productos locales a Supabase</button>
+            <button className="button--ghost" onClick={migrateLocalMenu}>Migrar menú local a Supabase</button>
             <button className="button--ghost" onClick={() => { setJsonDraft(JSON.stringify(menu, null, 2)); setJsonMode(!jsonMode); }}>{jsonMode ? 'Vista normal' : 'Editar JSON'}</button>
             <button className="button--danger" onClick={resetMenu}>Reset menú</button>
           </div>
@@ -1331,9 +1343,10 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
                       <div className="admin-image-slot">
                         <ProductImageManager
                           item={item}
-                          categoryId={category.id}
-                          images={productImages[item.supabaseProductId || item.id] || []}
+                          category={category}
+                          images={productImages[productImageKey(item)] || []}
                           adminPin={pin}
+                          onSaveProduct={persistProduct}
                           refreshProductImages={refreshProductImages}
                           productImagesError={productImagesError}
                         />
@@ -1384,17 +1397,23 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
 }
 
 
-function ProductImageManager({ item, categoryId, images, adminPin, refreshProductImages, productImagesError }) {
+function ProductImageManager({ item, category, images, adminPin, onSaveProduct, refreshProductImages, productImagesError }) {
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
-  const productId = item.supabaseProductId || item.id;
+  const productId = productImageKey(item);
+  const isSavedInSupabase = isSupabaseBackedProduct(item);
   const remainingSlots = Math.max(0, 5 - images.length);
 
   async function uploadFiles(event) {
     const files = Array.from(event.target.files || []).slice(0, remainingSlots);
     if (!files.length) return;
     if (!isSupabaseConfigured) {
-      setMessage('Configura VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY para usar imágenes en Supabase.');
+      setMessage('Configura Supabase para subir imágenes.');
+      event.target.value = '';
+      return;
+    }
+    if (!isSavedInSupabase || !productId) {
+      setMessage('Primero guarda este producto en Supabase.');
       event.target.value = '';
       return;
     }
@@ -1405,7 +1424,7 @@ function ProductImageManager({ item, categoryId, images, adminPin, refreshProduc
         const formData = new FormData();
         formData.append('adminPin', adminPin);
         formData.append('productId', productId);
-        formData.append('category', categoryId);
+        formData.append('category', category.id);
         formData.append('name', item.name || 'Producto');
         formData.append('description', item.description || '');
         formData.append('price', String(item.price || ''));
@@ -1427,6 +1446,23 @@ function ProductImageManager({ item, categoryId, images, adminPin, refreshProduc
     } finally {
       setUploading(false);
       event.target.value = '';
+    }
+  }
+
+  async function saveProductInSupabase() {
+    if (!isSupabaseConfigured) {
+      setMessage('Configura Supabase para subir imágenes.');
+      return;
+    }
+    setUploading(true);
+    setMessage('Guardando producto en Supabase...');
+    try {
+      await onSaveProduct(category, item, 'POST');
+      setMessage('Producto guardado en Supabase. Ya puedes subir imágenes.');
+    } catch (error) {
+      setMessage(error.message || 'No se pudo guardar el producto en Supabase.');
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -1458,7 +1494,13 @@ function ProductImageManager({ item, categoryId, images, adminPin, refreshProduc
         <span className="small-note">{images.length}/5</span>
       </div>
       {productImagesError && <p className="small-note warning-note">{productImagesError}</p>}
-      {!isSupabaseConfigured && <p className="small-note warning-note">Configura Supabase para cargar y mostrar imágenes reales.</p>}
+      {!isSupabaseConfigured && <p className="small-note warning-note">Configura Supabase para subir imágenes.</p>}
+      {isSupabaseConfigured && !isSavedInSupabase && (
+        <div className="supabase-save-notice">
+          <p className="small-note warning-note">Este producto todavía no está guardado en Supabase.</p>
+          <button type="button" className="button--ghost" onClick={saveProductInSupabase} disabled={uploading}>Guardar en Supabase</button>
+        </div>
+      )}
       <div className="admin-image-preview-list">
         {images.length === 0 && <div className="admin-image-empty">Sin imágenes en Supabase</div>}
         {images.map((image) => (
@@ -1470,7 +1512,7 @@ function ProductImageManager({ item, categoryId, images, adminPin, refreshProduc
       </div>
       <label className="file-picker">
         Subir imágenes (jpeg/png/webp, máx. 2 MB c/u)
-        <input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={uploading || remainingSlots === 0} onChange={uploadFiles} />
+        <input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={uploading || remainingSlots === 0 || !isSupabaseConfigured || !isSavedInSupabase} onChange={uploadFiles} />
       </label>
       {remainingSlots === 0 && <p className="small-note">Máximo 5 imágenes por producto.</p>}
       {uploading && <p className="small-note">Procesando imagen...</p>}
