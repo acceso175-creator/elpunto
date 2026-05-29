@@ -11,7 +11,8 @@ const STORAGE = {
   metrics: 'elpunto_metrics_v1',
   profile: 'elpunto_profile_v1',
   cart: 'elpunto_cart_v1',
-  session: 'elpunto_session_v1'
+  session: 'elpunto_session_v1',
+  lastStripeOrder: 'elpunto_last_stripe_order_v1'
 };
 
 const ADMIN_PIN = '1234';
@@ -176,6 +177,15 @@ function formatMoney(value) {
   return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value);
 }
 
+function hasNumericPrice(item) {
+  const price = Number(item?.price);
+  return Number.isFinite(price) && price > 0;
+}
+
+function cartHasPriceConfirmation(cart) {
+  return cart.some((item) => !hasNumericPrice(item) || /precio por confirmar/i.test(item.priceLabel || ''));
+}
+
 function paymentLabel(value) {
   return PAYMENT_METHODS.find((method) => method.value === value)?.label || 'Efectivo';
 }
@@ -278,14 +288,23 @@ function App() {
   const [business, setBusiness] = usePersistedState(STORAGE.business, businessDefaults);
   const [cart, setCart] = usePersistedState(STORAGE.cart, []);
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
-  const isAdminPath = window.location.pathname === '/admin';
-  const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : 'inicio');
+  const currentPath = window.location.pathname;
+  const isAdminPath = currentPath === '/admin';
+  const isPaymentSuccessPath = currentPath === '/payment-success';
+  const isPaymentCancelPath = currentPath === '/payment-cancel';
+  const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : (window.location.hash === '#pedido' ? 'pedido' : 'inicio'));
   const [productImages, setProductImages] = useState({});
   const [productImagesError, setProductImagesError] = useState('');
   const [dataSource, setDataSource] = useState(isSupabaseConfigured ? 'loading' : 'local');
 
   useEffect(() => {
     ensureSessionMetric();
+  }, []);
+
+  useEffect(() => {
+    if (window.location.hash === '#pedido') {
+      window.setTimeout(() => document.getElementById('pedido')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+    }
   }, []);
 
   useEffect(() => {
@@ -363,6 +382,10 @@ function App() {
     window.setTimeout(() => {
       document.getElementById(sectionIds[section] || section)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 50);
+  }
+
+  if (isPaymentSuccessPath || isPaymentCancelPath) {
+    return <PaymentResultPage type={isPaymentSuccessPath ? 'success' : 'cancel'} business={business} />;
   }
 
   if (isAdminPath) {
@@ -584,9 +607,11 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   function handleAdd() {
     addToCart({
       id: item.id,
+      supabaseProductId: item.supabaseProductId || (isUuid(item.id) ? item.id : undefined),
       categoryId,
       name: item.name,
       price: item.price,
+      priceLabel: item.priceLabel,
       quantity,
       removedIngredients: removed,
       selectedOptions,
@@ -671,8 +696,12 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
   const [geoLink, setGeoLink] = useState('');
   const [notes, setNotes] = useState('');
   const [isLocating, setIsLocating] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [checkoutError, setCheckoutError] = useState('');
   const selectedPaymentLabel = paymentLabel(payment);
-  const isOnlinePaymentReady = Boolean(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY) && cartTotal > 0;
+  const hasPriceConfirmation = cartHasPriceConfirmation(cart);
+  const isCartTotalNumeric = Number.isFinite(Number(cartTotal)) && Number(cartTotal) > 0;
+  const isOnlinePaymentReady = cart.length > 0 && isCartTotalNumeric && !hasPriceConfirmation;
   const cryptoWallets = cryptoWalletsFromBusiness(business);
 
   function getLocation() {
@@ -695,8 +724,8 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
     );
   }
 
-  function buildMessage() {
-    const orderNumber = createOrderNumber();
+  function buildMessage(forStripeOrderNumber = '') {
+    const orderNumber = forStripeOrderNumber || createOrderNumber();
     const items = cart.map((item, index) => {
       const opts = Object.entries(item.selectedOptions || {})
         .map(([key, value]) => `${key}: ${value}`)
@@ -713,12 +742,46 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
 
     const totalText = cartTotal ? formatMoney(cartTotal) : 'Por confirmar';
     const paymentNote = payment === 'pago_en_linea'
-      ? '\nPago en línea seleccionado. Pendiente de confirmación.'
+      ? '\nEstado: pendiente de pago'
       : payment === 'criptomonedas'
         ? '\nPago con criptomonedas seleccionado. Solicito datos de pago.'
         : '';
 
     return `Hola, quiero hacer un pedido en El Punto.\n\nOrden: ${orderNumber}\nNombre: ${profile.name || 'Cliente'}\nTeléfono: ${profile.phone || 'No capturado'}\nMétodo de pago: ${selectedPaymentLabel}${paymentNote}\n${orderType === 'domicilio' ? 'Tipo: A domicilio' : 'Tipo: Para recoger'}${locationText}\n\nPedido:\n${items}\n\nTotal estimado: ${totalText}\nNotas: ${notes || 'Sin notas'}\n\nPor favor confírmenme disponibilidad y tiempo estimado.`;
+  }
+
+  async function startStripeCheckout() {
+    if (!isOnlinePaymentReady || checkoutLoading) return;
+    if (orderType === 'domicilio' && !address && !geoLink) {
+      setCheckoutError('Para domicilio agrega dirección o ubicación antes de pagar.');
+      return;
+    }
+    setCheckoutLoading(true);
+    setCheckoutError('');
+    try {
+      const whatsappMessage = buildMessage();
+      const response = await fetch('/.netlify/functions/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cart,
+          customerName: profile.name,
+          customerPhone: profile.phone,
+          orderType,
+          deliveryAddress: orderType === 'domicilio' ? [address, geoLink].filter(Boolean).join(' | ') : '',
+          notes,
+          paymentMethod: payment,
+          whatsappMessage
+        })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'No se pudo iniciar el pago con tarjeta.');
+      writeStorage(STORAGE.lastStripeOrder, { orderId: result.orderId, orderNumber: result.orderNumber, customerName: profile.name, customerPhone: profile.phone });
+      window.location.href = result.checkoutUrl;
+    } catch (error) {
+      setCheckoutError(error.message || 'No se pudo iniciar el pago con tarjeta.');
+      setCheckoutLoading(false);
+    }
   }
 
   function sendWhatsApp() {
@@ -800,10 +863,16 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
         {payment === 'pago_en_linea' && (
           <div className="payment-info-card">
             <p>Paga de forma segura con tarjeta antes de enviar tu pedido.</p>
-            {!isOnlinePaymentReady && (
-              <p className="small-note">Pago en línea todavía no está configurado o el pedido requiere confirmar precio por WhatsApp.</p>
+            {hasPriceConfirmation && (
+              <p className="small-note warning-note">Este pedido requiere confirmación por WhatsApp antes de pagar.</p>
             )}
-            <button className="button--ghost" disabled={!isOnlinePaymentReady}>Pagar con tarjeta</button>
+            {!hasPriceConfirmation && !isOnlinePaymentReady && (
+              <p className="small-note">Agrega productos con precio numérico para pagar en línea.</p>
+            )}
+            {checkoutError && <p className="error-note">{checkoutError}</p>}
+            <button className="button--ghost" disabled={!isOnlinePaymentReady || checkoutLoading} onClick={startStripeCheckout}>
+              {checkoutLoading ? 'Creando pago...' : 'Pagar con tarjeta'}
+            </button>
           </div>
         )}
 
@@ -840,6 +909,40 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
         <p className="small-note">El portal genera el mensaje. El pedido queda confirmado hasta que el negocio responda por WhatsApp.</p>
       </div>
     </section>
+  );
+}
+
+
+function PaymentResultPage({ type, business }) {
+  const params = new URLSearchParams(window.location.search);
+  const storedOrder = readStorage(STORAGE.lastStripeOrder, {});
+  const orderNumber = params.get('order_number') || storedOrder.orderNumber || '';
+  const isSuccess = type === 'success';
+
+  function sendPaymentWhatsApp() {
+    const number = String(business.whatsapp || '').replace(/[^0-9]/g, '');
+    if (!number) {
+      alert('Falta configurar el número de WhatsApp en Admin.');
+      return;
+    }
+    const message = `Pago en línea realizado. Favor de confirmar mi pedido.${orderNumber ? `\nNúmero de orden: ${orderNumber}` : ''}`;
+    window.open(`https://wa.me/${number}?text=${encodeURIComponent(message)}`, '_blank');
+  }
+
+  return (
+    <main>
+      <section className="section payment-result">
+        <div className="panel narrow">
+          <p className="eyebrow">{isSuccess ? 'Pago recibido' : 'Pago cancelado'}</p>
+          <h1>{isSuccess ? 'Pago recibido. Tu pedido está en proceso de confirmación.' : 'Pago cancelado. Puedes intentar de nuevo o mandar tu pedido por WhatsApp.'}</h1>
+          {orderNumber && <p className="success">Orden: {orderNumber}</p>}
+          <div className="payment-result__actions">
+            {isSuccess && <button onClick={sendPaymentWhatsApp}>Enviar detalles por WhatsApp</button>}
+            <a className="button--ghost" href={isSuccess ? '/' : '/#pedido'}>{isSuccess ? 'Volver al inicio' : 'Volver al pedido'}</a>
+          </div>
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -893,6 +996,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonDraft, setJsonDraft] = useState(JSON.stringify(menu, null, 2));
   const [adminStatus, setAdminStatus] = useState('');
+  const [orders, setOrders] = useState([]);
+  const [ordersStatus, setOrdersStatus] = useState('');
 
   useEffect(() => {
     const refresh = () => setMetrics(readStorage(STORAGE.metrics, defaultMetrics()));
@@ -910,6 +1015,17 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     if (pin !== ADMIN_PIN) alert('PIN incorrecto. En modo local el PIN demo es 1234.');
   }
 
+  async function loadOrders() {
+    if (!isSupabaseConfigured) return;
+    try {
+      const result = await adminRequest('admin-orders', { method: 'GET', pin });
+      setOrders(result.orders || []);
+      setOrdersStatus('Órdenes sincronizadas.');
+    } catch (error) {
+      setOrdersStatus(error.message);
+    }
+  }
+
   async function reloadAdminMenu() {
     if (!isSupabaseConfigured) return;
     try {
@@ -925,7 +1041,10 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   }
 
   useEffect(() => {
-    if (unlocked && isSupabaseConfigured) reloadAdminMenu();
+    if (unlocked && isSupabaseConfigured) {
+      reloadAdminMenu();
+      loadOrders();
+    }
   }, [unlocked]);
 
   async function persistProduct(category, product, method = 'PATCH') {
@@ -1247,6 +1366,50 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           <Metric label="Pedidos enviados" value={metrics.orderRequests} />
         </div>
         <p className="small-note">Métricas locales del navegador. Para métricas reales usa Google Analytics, Plausible o backend.</p>
+      </div>
+
+
+      <div className="panel admin-full">
+        <div className="admin-header">
+          <div>
+            <p className="eyebrow">Órdenes</p>
+            <h2>Órdenes recientes</h2>
+          </div>
+          <button type="button" className="button--ghost" onClick={loadOrders}>Actualizar órdenes</button>
+        </div>
+        <p className="small-note">{ordersStatus || 'Las órdenes se crean desde Stripe Checkout y se actualizan por webhook.'}</p>
+        <div className="orders-table-wrap">
+          <table className="orders-table">
+            <thead>
+              <tr>
+                <th>Orden</th>
+                <th>Cliente</th>
+                <th>Teléfono</th>
+                <th>Total</th>
+                <th>Pago</th>
+                <th>Estado pago</th>
+                <th>Estado orden</th>
+                <th>Fecha</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.length === 0 ? (
+                <tr><td colSpan="8">Sin órdenes todavía.</td></tr>
+              ) : orders.map((order) => (
+                <tr key={order.id}>
+                  <td>{order.order_number}</td>
+                  <td>{order.customer_name || 'Cliente'}</td>
+                  <td>{order.customer_phone || '—'}</td>
+                  <td>{formatMoney(order.total)}</td>
+                  <td>{paymentLabel(order.payment_method)}</td>
+                  <td>{order.payment_status}</td>
+                  <td>{order.order_status}</td>
+                  <td>{order.created_at ? new Date(order.created_at).toLocaleString('es-MX') : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="panel admin-full">

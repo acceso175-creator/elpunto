@@ -129,3 +129,73 @@ El archivo `netlify.toml` ya trae el build y redirect SPA para que `/admin` func
 
 - Build command: `npm run build`
 - Publish directory: `dist`
+
+## Stripe Checkout — fase 1
+
+El pago en línea usa Stripe Checkout desde Netlify Functions. El navegador nunca recibe `STRIPE_SECRET_KEY` ni `SUPABASE_SERVICE_ROLE_KEY`; la función recalcula precios desde Supabase antes de crear la sesión.
+
+### Variables privadas necesarias en Netlify
+
+Además de las variables de Supabase/Admin, configura:
+
+```txt
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_SUCCESS_URL=https://TU_DOMINIO/payment-success
+STRIPE_CANCEL_URL=https://TU_DOMINIO/payment-cancel
+SUPABASE_URL=https://TU-PROYECTO.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=tu_service_role_key
+```
+
+Notas de seguridad:
+
+- `STRIPE_SECRET_KEY` solo se usa en `netlify/functions/create-checkout-session.js` y `netlify/functions/stripe-webhook.js`.
+- `STRIPE_WEBHOOK_SECRET` solo se usa en `netlify/functions/stripe-webhook.js` para verificar la firma del webhook.
+- `SUPABASE_SERVICE_ROLE_KEY` solo se usa en Netlify Functions.
+- React/frontend no debe usar variables privadas ni confiar en precios del carrito para cobrar.
+
+### SQL que debes correr
+
+1. Ejecuta `supabase/schema.sql` si todavía no tienes tablas de menú/productos.
+2. Ejecuta `supabase/orders.sql` para crear:
+   - `orders`
+   - `order_items`
+   - `payments`
+   - índices, trigger de `updated_at` y RLS sin escrituras públicas.
+
+### Pasos para configurar Stripe en modo test
+
+1. Crea o entra a tu cuenta de Stripe.
+2. Activa **Test mode**.
+3. Copia tu `STRIPE_SECRET_KEY` de test mode (`sk_test_...`).
+4. Configura las variables privadas en Netlify.
+5. Haz deploy.
+6. En Stripe, crea un webhook endpoint con esta URL:
+
+   ```txt
+   https://TU_DOMINIO/.netlify/functions/stripe-webhook
+   ```
+
+7. Selecciona estos eventos:
+   - `checkout.session.completed`
+   - `checkout.session.expired`
+   - `payment_intent.payment_failed`
+8. Copia el signing secret del webhook (`whsec_...`) a `STRIPE_WEBHOOK_SECRET` en Netlify.
+9. Prueba con una tarjeta de Stripe en modo test, por ejemplo `4242 4242 4242 4242`, fecha futura y CVC cualquiera.
+
+### Flujo esperado
+
+1. El cliente agrega productos con precio numérico al carrito.
+2. Elige **Pago en línea**.
+3. El portal muestra **Paga de forma segura con tarjeta** y el botón **Pagar con tarjeta**.
+4. Si el carrito trae productos con `Precio por confirmar` o precio no numérico, el botón queda bloqueado y se pide confirmar por WhatsApp.
+5. Al pagar, `create-checkout-session` valida productos en Supabase, crea `orders` y `order_items`, crea una Checkout Session y redirige a Stripe.
+6. Stripe redirige a `/payment-success` o `/payment-cancel` según el resultado.
+7. El webhook verificado actualiza la orden como `paid`, `expired` o `failed` e inserta registros en `payments`.
+8. WhatsApp sigue disponible como alternativa y en `/payment-success` permite enviar el mensaje “Pago en línea realizado. Favor de confirmar mi pedido.” con el número de orden.
+
+### Funciones relacionadas
+
+- `netlify/functions/create-checkout-session.js`
+- `netlify/functions/stripe-webhook.js`
+- `netlify/functions/admin-orders.js`
