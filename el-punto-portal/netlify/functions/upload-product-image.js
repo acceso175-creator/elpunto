@@ -68,26 +68,12 @@ async function supabaseFetch(path, options = {}) {
   return data;
 }
 
-async function upsertProduct(formData) {
-  const productId = String(formData.get('productId') || '').trim();
-  const payload = [{
-    id: productId,
-    category: String(formData.get('category') || ''),
-    name: String(formData.get('name') || ''),
-    description: String(formData.get('description') || ''),
-    price: Number(formData.get('price')) || null,
-    available: String(formData.get('available')) !== 'false',
-    updated_at: new Date().toISOString()
-  }];
-
-  await supabaseFetch('/rest/v1/products?on_conflict=id', {
-    method: 'POST',
-    headers: serviceHeaders({
-      'Content-Type': 'application/json',
-      Prefer: 'resolution=merge-duplicates'
-    }),
-    body: JSON.stringify(payload)
+async function ensureProductExists(productId) {
+  const [record] = await supabaseFetch(`/rest/v1/products?id=eq.${encodeURIComponent(productId)}&select=id`, {
+    method: 'GET',
+    headers: serviceHeaders()
   });
+  if (!record?.id) throw new Error('El producto no existe en Supabase. Guarda o migra el producto antes de subir imágenes.');
 }
 
 async function uploadImage(event) {
@@ -108,7 +94,7 @@ async function uploadImage(event) {
   if (!ALLOWED_TYPES.has(file.type)) return json(400, { error: 'Solo se aceptan imágenes jpeg, png o webp.' });
   if (file.size > MAX_SIZE_BYTES) return json(400, { error: 'La imagen excede 2 MB.' });
 
-  await upsertProduct(formData);
+  await ensureProductExists(productId);
 
   const extension = ALLOWED_TYPES.get(file.type);
   const random = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(16).slice(2);

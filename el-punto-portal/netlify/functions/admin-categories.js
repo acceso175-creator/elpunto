@@ -1,0 +1,38 @@
+import { ensureCategory, getSupabaseAdmin, json, menuSnapshot, parseBody, slugify, validateAdminPin } from './_supabaseAdmin.js';
+
+export async function handler(event) {
+  try {
+    const body = parseBody(event);
+    const pin = body.adminPin || event.headers['x-admin-pin'];
+    if (!validateAdminPin(pin)) return json(401, { error: 'PIN de admin inválido.' });
+    const supabase = getSupabaseAdmin();
+
+    if (event.httpMethod === 'GET') return json(200, await menuSnapshot(supabase));
+    if (event.httpMethod === 'POST') {
+      const category = await ensureCategory(supabase, body.category || { name: body.name, slug: body.slug || slugify(body.name) });
+      return json(200, { category });
+    }
+    if (event.httpMethod === 'PATCH') {
+      if (!body.id && !body.slug) return json(400, { error: 'Falta id o slug de categoría.' });
+      const patch = {
+        ...(body.name ? { name: String(body.name).trim(), slug: body.slug || slugify(body.name) } : {}),
+        ...(typeof body.active === 'boolean' ? { active: body.active } : {}),
+        updated_at: new Date().toISOString()
+      };
+      const query = supabase.from('categories').update(patch).select('id, name, slug, sort_order, active');
+      const { data, error } = body.id ? await query.eq('id', body.id).single() : await query.eq('slug', body.slug).single();
+      if (error) throw new Error(error.message);
+      return json(200, { category: data });
+    }
+    if (event.httpMethod === 'DELETE') {
+      if (!body.id && !body.slug) return json(400, { error: 'Falta id o slug de categoría.' });
+      const query = supabase.from('categories').delete();
+      const { error } = body.id ? await query.eq('id', body.id) : await query.eq('slug', body.slug);
+      if (error) throw new Error(error.message);
+      return json(200, { ok: true });
+    }
+    return json(405, { error: 'Método no permitido.' });
+  } catch (error) {
+    return json(500, { error: error.message || 'Error inesperado en categorías.' });
+  }
+}

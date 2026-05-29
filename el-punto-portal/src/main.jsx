@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { businessDefaults, initialMenu } from './menuData.js';
 import { isSupabaseConfigured, listProductImages } from './lib/supabaseClient.js';
+import { getMenuData, normalizeMenuData } from './services/menuService.js';
 import './styles.css';
 
 const STORAGE = {
@@ -25,6 +26,47 @@ const PAYMENT_METHODS = [
 ];
 const BASE_CATEGORY_NAMES = ['Desayunos', 'Birria', 'Bebidas', 'Postres'];
 
+
+
+function mapBusinessSettings(row) {
+  if (!row) return businessDefaults;
+  return {
+    ...businessDefaults,
+    id: row.id,
+    name: row.business_name || businessDefaults.name,
+    subtitle: row.subtitle || businessDefaults.subtitle,
+    whatsapp: row.whatsapp_number || businessDefaults.whatsapp,
+    googleMapsUrl: row.google_maps_url || businessDefaults.googleMapsUrl,
+    cryptoBtcWallet: row.crypto_btc_wallet || '',
+    cryptoEthWallet: row.crypto_eth_wallet || '',
+    cryptoUsdtTrc20Wallet: row.crypto_usdt_trc20_wallet || '',
+    cryptoNote: row.crypto_note || '',
+    cryptoWallets: [
+      row.crypto_btc_wallet && `BTC: ${row.crypto_btc_wallet}`,
+      row.crypto_eth_wallet && `ETH: ${row.crypto_eth_wallet}`,
+      row.crypto_usdt_trc20_wallet && `USDT TRC20: ${row.crypto_usdt_trc20_wallet}`,
+      row.crypto_note
+    ].filter(Boolean)
+  };
+}
+
+async function adminRequest(functionName, { method = 'POST', pin, body = {} } = {}) {
+  const response = await fetch(`/.netlify/functions/${functionName}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(pin ? { 'x-admin-pin': pin } : {})
+    },
+    body: method === 'GET' ? undefined : JSON.stringify({ adminPin: pin, ...body })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'Error en función de Netlify.');
+  return result;
+}
+
+function menuFromAdminSnapshot(snapshot) {
+  return normalizeMenu(normalizeMenuData(snapshot.categories || [], snapshot.products || []));
+}
 
 function readStorage(key, fallback) {
   try {
@@ -105,7 +147,8 @@ function normalizeMenu(menu) {
     description: category.description || categoryDescription(category.name),
     items: (category.items || []).map((item) => ({
       ...item,
-      supabaseProductId: isUuid(item.supabaseProductId) ? item.supabaseProductId : (isUuid(item.id) ? item.id : createStableUuid()),
+      isSupabaseProduct: item.isSupabaseProduct === true,
+      supabaseProductId: item.isSupabaseProduct === true && isUuid(item.supabaseProductId || item.id) ? (item.supabaseProductId || item.id) : undefined,
       images: Array.isArray(item.images) ? item.images.filter((image) => typeof image === 'string' && !image.startsWith('data:')) : [],
       ingredients: normalizeIngredients(item.ingredients)
     }))
@@ -116,6 +159,10 @@ function removableIngredientNames(ingredients) {
   return normalizeIngredients(ingredients)
     .filter((ingredient) => ingredient.removable)
     .map((ingredient) => ingredient.name);
+}
+
+function productOptions(product) {
+  return Array.isArray(product?.options) ? product.options : [];
 }
 
 function usePersistedState(key, fallback, normalize = identity) {
@@ -160,6 +207,14 @@ function createStableUuid() {
 
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
+function isSupabaseBackedProduct(item) {
+  return item?.isSupabaseProduct === true && isUuid(item?.supabaseProductId || item?.id);
+}
+
+function productImageKey(item) {
+  return isSupabaseBackedProduct(item) ? (item.supabaseProductId || item.id) : '';
 }
 
 function slugify(text) {
@@ -227,14 +282,38 @@ function App() {
   const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : 'inicio');
   const [productImages, setProductImages] = useState({});
   const [productImagesError, setProductImagesError] = useState('');
+  const [dataSource, setDataSource] = useState(isSupabaseConfigured ? 'loading' : 'local');
 
   useEffect(() => {
     ensureSessionMetric();
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSupabaseMenu() {
+      if (!isSupabaseConfigured) return;
+      const result = await getMenuData();
+      if (cancelled) return;
+      if (result.business) setBusiness((current) => ({ ...current, ...result.business }));
+      if (result.source === 'supabase') {
+        setMenu(normalizeMenu(result.menu));
+        const grouped = {};
+        result.menu.forEach((category) => {
+          category.items.forEach((item) => {
+            if (item.images?.length && productImageKey(item)) grouped[productImageKey(item)] = item.images;
+          });
+        });
+        setProductImages(grouped);
+      }
+      setDataSource(result.source);
+    }
+    loadSupabaseMenu();
+    return () => { cancelled = true; };
+  }, [setBusiness, setMenu]);
+
   const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + calculateLine(item) * item.quantity, 0), [cart]);
   const cartCount = useMemo(() => cart.reduce((sum, item) => sum + item.quantity, 0), [cart]);
-  const supabaseProductIds = useMemo(() => menu.flatMap((category) => category.items.map((item) => item.supabaseProductId || item.id).filter(Boolean)), [menu]);
+  const supabaseProductIds = useMemo(() => menu.flatMap((category) => category.items.map(productImageKey).filter(Boolean)), [menu]);
 
   function addToCart(payload) {
     setCart((current) => [...current, { ...payload, cartId: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}` }]);
@@ -292,7 +371,7 @@ function App() {
         <div className="admin-route__bar">
           <button className="button--ghost admin-exit" onClick={goHomeFromAdmin}>Salir del admin</button>
         </div>
-        <AdminSection menu={menu} setMenu={setMenu} business={business} setBusiness={setBusiness} productImages={productImages} refreshProductImages={refreshProductImages} productImagesError={productImagesError} />
+        <AdminSection menu={menu} setMenu={setMenu} business={business} setBusiness={setBusiness} productImages={productImages} refreshProductImages={refreshProductImages} productImagesError={productImagesError} dataSource={dataSource} setDataSource={setDataSource} />
       </main>
     );
   }
@@ -301,7 +380,7 @@ function App() {
     <main>
       <Header navigateTo={navigateTo} />
       <Hero navigateTo={navigateTo} />
-      <LocationSection />
+      <LocationSection business={business} />
       
       {activeSection === 'inicio' && <HomeImages />}
 
@@ -350,8 +429,10 @@ function Header({ navigateTo }) {
 
   return (
     <header className="site-header">
-      <button className="brand-mini" onClick={() => navigateTo('inicio')}>
-        {!logoError ? <img src="/images/logo-el-punto.png" alt="Logo El Punto" onError={() => setLogoError(true)} /> : <span>El Punto</span>}
+      <button className="brand-mini" onClick={() => navigateTo('inicio')} aria-label="Ir al inicio">
+        <span className="brand-logo">
+          {!logoError ? <img src="/images/logo-el-punto.png" alt="Logo El Punto" onError={() => setLogoError(true)} /> : <span className="brand-logo__fallback">El Punto</span>}
+        </span>
       </button>
       <nav className="site-nav">
         {links.map(([id, label]) => (
@@ -403,7 +484,8 @@ function Hero({ navigateTo }) {
 }
 
 
-function LocationSection() {
+function LocationSection({ business }) {
+  const mapsLink = business.googleMapsUrl || MAPS_LINK;
   return (
     <section id="ubicacion" className="section scroll-target">
       <div className="location-card">
@@ -412,7 +494,7 @@ function LocationSection() {
           <h2>Estamos aquí</h2>
           <p className="location-copy">Pasa por tu pedido o mándanos tu ubicación para entrega.</p>
           <div className="location-actions">
-            <a className="location-link location-link--primary" href={MAPS_LINK} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
+            <a className="location-link location-link--primary" href={mapsLink} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
           </div>
         </div>
         <div className="map-placeholder" aria-label="Mapa del local">
@@ -464,7 +546,7 @@ function MenuSection({ menu, addToCart, productImages }) {
           </div>
           <div className="grid">
             {category.items.map((item) => (
-              <ProductCard key={item.id} item={item} categoryId={category.id} addToCart={addToCart} images={productImages[item.supabaseProductId || item.id] || []} />
+              <ProductCard key={item.id} item={item} categoryId={category.id} addToCart={addToCart} images={productImages[productImageKey(item)] || []} />
             ))}
           </div>
         </div>
@@ -477,11 +559,12 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   const [quantity, setQuantity] = useState(1);
   const [removed, setRemoved] = useState([]);
   const [imageIndex, setImageIndex] = useState(0);
-  const imageUrls = images.map((image) => image.image_url);
+  const imageUrls = images.map((image) => image.image_url || image.imageUrl).filter(Boolean);
   const removableIngredients = removableIngredientNames(item.ingredients);
+  const optionList = productOptions(item);
   const [selectedOptions, setSelectedOptions] = useState(() => {
     const options = {};
-    (item.options || []).forEach((option) => {
+    optionList.forEach((option) => {
       options[option.name] = option.values?.[0] || '';
     });
     return options;
@@ -536,18 +619,18 @@ function ProductCard({ item, categoryId, addToCart, images }) {
         </div>
         {item.badge && <span className="badge">{item.badge}</span>}
       </div>
-      <strong className="price">{formatMoney(item.price)}</strong>
+      <strong className="price">{item.price ? formatMoney(item.price) : (item.priceLabel || 'Precio por confirmar')}</strong>
 
-      {(item.options || []).length > 0 && (
+      {optionList.length > 0 && (
         <div className="modifiers">
-          {item.options.map((option) => (
+          {optionList.map((option) => (
             <label key={option.name}>
               {option.name}
               <select
                 value={selectedOptions[option.name] || ''}
                 onChange={(event) => setSelectedOptions((current) => ({ ...current, [option.name]: event.target.value }))}
               >
-                {option.values.map((value) => <option key={value} value={value}>{value}</option>)}
+                {(option.values || []).map((value) => <option key={value} value={value}>{value}</option>)}
               </select>
             </label>
           ))}
@@ -735,7 +818,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
           </div>
         )}
 
-        <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={MAPS_LINK} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
+        <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={business.googleMapsUrl || MAPS_LINK} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
 
         {orderType === 'domicilio' && (
           <div className="delivery-box">
@@ -798,7 +881,7 @@ function AccountSection({ profile, setProfile }) {
   );
 }
 
-function AdminSection({ menu, setMenu, business, setBusiness, productImages, refreshProductImages, productImagesError }) {
+function AdminSection({ menu, setMenu, business, setBusiness, productImages, refreshProductImages, productImagesError, dataSource, setDataSource }) {
   const [pin, setPin] = useState('');
   const [unlocked, setUnlocked] = useState(false);
   const [metrics, setMetrics] = useState(() => readStorage(STORAGE.metrics, defaultMetrics()));
@@ -809,6 +892,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   const adminCategories = categoryOptions(menu);
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonDraft, setJsonDraft] = useState(JSON.stringify(menu, null, 2));
+  const [adminStatus, setAdminStatus] = useState('');
 
   useEffect(() => {
     const refresh = () => setMetrics(readStorage(STORAGE.metrics, defaultMetrics()));
@@ -817,52 +901,146 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   }, []);
 
   function login() {
+    if (isSupabaseConfigured) {
+      if (!pin.trim()) return alert('Escribe el ADMIN_PIN configurado en Netlify.');
+      setUnlocked(true);
+      return;
+    }
     setUnlocked(pin === ADMIN_PIN);
-    if (pin !== ADMIN_PIN) alert('PIN incorrecto. En esta demo el PIN es 1234. Cámbialo cuando conectes backend.');
+    if (pin !== ADMIN_PIN) alert('PIN incorrecto. En modo local el PIN demo es 1234.');
+  }
+
+  async function reloadAdminMenu() {
+    if (!isSupabaseConfigured) return;
+    try {
+      const snapshot = await adminRequest('admin-products', { method: 'GET', pin });
+      setMenu(menuFromAdminSnapshot(snapshot));
+      setDataSource('supabase-admin');
+      setAdminStatus('Menú sincronizado con Supabase.');
+      await refreshProductImages();
+      return snapshot;
+    } catch (error) {
+      setAdminStatus(error.message);
+    }
+  }
+
+  useEffect(() => {
+    if (unlocked && isSupabaseConfigured) reloadAdminMenu();
+  }, [unlocked]);
+
+  async function persistProduct(category, product, method = 'PATCH') {
+    if (!isSupabaseConfigured) return null;
+    try {
+      const snapshot = await adminRequest('admin-products', { method, pin, body: { product, category } });
+      setMenu(menuFromAdminSnapshot(snapshot));
+      setDataSource('supabase-admin');
+      setAdminStatus('Cambio guardado en Supabase.');
+      await refreshProductImages();
+      return snapshot;
+    } catch (error) {
+      setAdminStatus(error.message);
+      throw error;
+    }
+  }
+
+  async function persistCategory(category, method = 'POST') {
+    if (!isSupabaseConfigured) return;
+    try {
+      const snapshot = await adminRequest('admin-categories', { method, pin, body: { category, id: category.supabaseCategoryId, slug: category.id, name: category.name } });
+      if (snapshot.categories) setMenu(menuFromAdminSnapshot(snapshot));
+      setAdminStatus('Categoría guardada en Supabase.');
+    } catch (error) {
+      setAdminStatus(error.message);
+    }
+  }
+
+  async function persistSettings(nextBusiness) {
+    if (!isSupabaseConfigured) return;
+    try {
+      const result = await adminRequest('admin-settings', { method: 'PATCH', pin, body: { settings: nextBusiness } });
+      if (result.settings) setBusiness((current) => ({ ...current, ...mapBusinessSettings(result.settings) }));
+      setAdminStatus('Configuración guardada en Supabase.');
+    } catch (error) {
+      setAdminStatus(error.message);
+    }
+  }
+
+  async function migrateLocalMenu() {
+    if (!isSupabaseConfigured) return alert('Configura Supabase antes de migrar.');
+    if (!confirm('¿Migrar menú local a Supabase evitando duplicados por nombre/categoría?')) return;
+    try {
+      const snapshot = await adminRequest('admin-products', { method: 'POST', pin, body: { action: 'migrate', menu } });
+      setMenu(menuFromAdminSnapshot(snapshot));
+      setDataSource('supabase-admin');
+      setAdminStatus('Menú migrado a Supabase correctamente.');
+    } catch (error) {
+      setAdminStatus(error.message);
+    }
   }
 
   function updateItem(categoryId, itemId, patch) {
+    const category = menu.find((item) => item.id === categoryId);
+    const existing = category?.items.find((item) => item.id === itemId);
+    const updated = existing ? { ...existing, ...patch } : null;
     setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
       ...category,
       items: category.items.map((item) => item.id === itemId ? { ...item, ...patch } : item)
     }));
+    if (category && updated) persistProduct(category, updated);
   }
 
   function deleteItem(categoryId, itemId) {
+    const category = menu.find((item) => item.id === categoryId);
+    const product = category?.items.find((item) => item.id === itemId);
     setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
       ...category,
       items: category.items.filter((item) => item.id !== itemId)
     }));
+    if (isSupabaseConfigured && isSupabaseBackedProduct(product)) {
+      adminRequest('admin-products', { method: 'DELETE', pin, body: { id: productImageKey(product) } })
+        .then((snapshot) => setMenu(menuFromAdminSnapshot(snapshot)))
+        .catch((error) => setAdminStatus(error.message));
+    }
   }
 
   function addCategoryByName(name) {
     const cleanName = String(name || '').trim();
     if (!cleanName) return '';
     const id = slugify(cleanName);
-    setMenu((current) => categoryExists(current, cleanName) ? current : [...current, createCategory(cleanName)]);
+    const category = createCategory(cleanName);
+    setMenu((current) => categoryExists(current, cleanName) ? current : [...current, category]);
+    persistCategory(category);
     return id;
   }
 
   function renameCategory(categoryId, name) {
     const cleanName = String(name || '').trim();
     if (!cleanName) return alert('Escribe un nombre de categoría.');
+    const existing = menu.find((category) => category.id === categoryId);
+    const renamed = existing ? { ...existing, id: slugify(cleanName), name: cleanName, description: existing.description || categoryDescription(cleanName) } : null;
     setMenu((current) => current.map((category) => category.id === categoryId ? {
       ...category,
+      id: slugify(cleanName),
       name: cleanName,
       description: category.description || categoryDescription(cleanName)
     } : category));
+    if (renamed) persistCategory(renamed, 'PATCH');
   }
 
   function deleteCategory(categoryId) {
     const category = menu.find((item) => item.id === categoryId);
     if (!category || category.items.length > 0) return alert('Solo puedes eliminar categorías sin productos asignados.');
     setMenu((current) => current.filter((item) => item.id !== categoryId));
+    if (isSupabaseConfigured) adminRequest('admin-categories', { method: 'DELETE', pin, body: { id: category.supabaseCategoryId, slug: category.id } }).catch((error) => setAdminStatus(error.message));
   }
 
   function moveItemToCategoryName(sourceCategoryId, itemId, name) {
     const cleanName = String(name || '').trim();
     if (!cleanName) return;
     const targetId = slugify(cleanName);
+    const sourceCategoryNow = menu.find((category) => category.id === sourceCategoryId);
+    const itemToPersist = sourceCategoryNow?.items.find((item) => item.id === itemId);
+    const targetCategoryNow = menu.find((category) => category.id === targetId || slugify(category.name) === targetId) || createCategory(cleanName);
     setMenu((current) => {
       const withCategory = categoryExists(current, cleanName) ? current : [...current, createCategory(cleanName)];
       const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
@@ -874,11 +1052,15 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         return category;
       });
     });
+    if (itemToPersist) persistProduct(targetCategoryNow, itemToPersist);
   }
 
   function moveItem(sourceCategoryId, itemId, targetCategoryId) {
     if (sourceCategoryId === targetCategoryId) return;
     const targetOption = adminCategories.find((category) => category.id === targetCategoryId);
+    const sourceCategoryNow = menu.find((category) => category.id === sourceCategoryId);
+    const itemToPersist = sourceCategoryNow?.items.find((item) => item.id === itemId);
+    const targetCategoryNow = menu.find((category) => category.id === targetCategoryId) || createCategory(targetOption?.name || targetCategoryId);
     setMenu((current) => {
       const withCategory = current.some((category) => category.id === targetCategoryId)
         ? current
@@ -896,9 +1078,16 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         return category;
       });
     });
+    if (itemToPersist) persistProduct(targetCategoryNow, itemToPersist);
   }
 
   function updateIngredient(categoryId, itemId, ingredientIndex, patch) {
+    const category = menu.find((item) => item.id === categoryId);
+    const existing = category?.items.find((item) => item.id === itemId);
+    const updated = existing ? {
+      ...existing,
+      ingredients: normalizeIngredients(existing.ingredients).map((ingredient, index) => index === ingredientIndex ? { ...ingredient, ...patch } : ingredient)
+    } : null;
     setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
       ...category,
       items: category.items.map((item) => item.id !== itemId ? item : {
@@ -906,9 +1095,13 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         ingredients: normalizeIngredients(item.ingredients).map((ingredient, index) => index === ingredientIndex ? { ...ingredient, ...patch } : ingredient)
       })
     }));
+    if (category && updated) persistProduct(category, updated);
   }
 
   function addIngredient(categoryId, itemId) {
+    const category = menu.find((item) => item.id === categoryId);
+    const existing = category?.items.find((item) => item.id === itemId);
+    const updated = existing ? { ...existing, ingredients: [...normalizeIngredients(existing.ingredients), { name: '', removable: true }] } : null;
     setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
       ...category,
       items: category.items.map((item) => item.id !== itemId ? item : {
@@ -916,9 +1109,13 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         ingredients: [...normalizeIngredients(item.ingredients), { name: '', removable: true }]
       })
     }));
+    if (category && updated) persistProduct(category, updated);
   }
 
   function deleteIngredient(categoryId, itemId, ingredientIndex) {
+    const category = menu.find((item) => item.id === categoryId);
+    const existing = category?.items.find((item) => item.id === itemId);
+    const updated = existing ? { ...existing, ingredients: normalizeIngredients(existing.ingredients).filter((_, index) => index !== ingredientIndex) } : null;
     setMenu((current) => current.map((category) => category.id !== categoryId ? category : {
       ...category,
       items: category.items.map((item) => item.id !== itemId ? item : {
@@ -926,32 +1123,35 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         ingredients: normalizeIngredients(item.ingredients).filter((_, index) => index !== ingredientIndex)
       })
     }));
+    if (category && updated) persistProduct(category, updated);
   }
 
   function addProduct() {
     if (!newProduct.name.trim()) return alert('Agrega nombre del producto.');
     const product = {
       id: slugify(newProduct.name),
-      supabaseProductId: createStableUuid(),
+      isSupabaseProduct: false,
       name: newProduct.name.trim(),
       price: Number(newProduct.price) || 0,
       description: newProduct.description.trim(),
       ingredients: splitCsv(newProduct.ingredients).map((name) => ({ name, removable: true })),
       images: [],
-      options: [],
+      options: {},
       available: true
     };
     const targetName = newProduct.categoryName.trim();
     const selectedCategory = adminCategories.find((category) => category.id === newProduct.categoryId);
     const targetId = targetName ? slugify(targetName) : newProduct.categoryId;
+    const targetCategory = menu.find((category) => category.id === targetId) || createCategory(targetName || selectedCategory?.name || targetId);
     setMenu((current) => {
       const needsCategory = !current.some((category) => category.id === targetId);
-      const withCategory = needsCategory ? [...current, createCategory(targetName || selectedCategory?.name || targetId)] : current;
+      const withCategory = needsCategory ? [...current, targetCategory] : current;
       return withCategory.map((category) => category.id !== targetId ? category : {
         ...category,
         items: [...category.items, product]
       });
     });
+    persistProduct(targetCategory, product, 'POST');
     setNewProduct({ ...newProduct, categoryName: '', name: '', price: '', description: '', ingredients: '' });
   }
 
@@ -1013,6 +1213,28 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
             Ubicación base
             <input value={business.address} onChange={(event) => setBusiness({ ...business, address: event.target.value })} />
           </label>
+          <label>
+            Link Google Maps
+            <input value={business.googleMapsUrl || ''} onChange={(event) => setBusiness({ ...business, googleMapsUrl: event.target.value })} placeholder="https://maps.app.goo.gl/..." />
+          </label>
+          <label>
+            Wallet BTC (opcional)
+            <input value={business.cryptoBtcWallet || ''} onChange={(event) => setBusiness({ ...business, cryptoBtcWallet: event.target.value })} />
+          </label>
+          <label>
+            Wallet ETH (opcional)
+            <input value={business.cryptoEthWallet || ''} onChange={(event) => setBusiness({ ...business, cryptoEthWallet: event.target.value })} />
+          </label>
+          <label>
+            Wallet USDT TRC20 (opcional)
+            <input value={business.cryptoUsdtTrc20Wallet || ''} onChange={(event) => setBusiness({ ...business, cryptoUsdtTrc20Wallet: event.target.value })} />
+          </label>
+          <label>
+            Nota cripto (opcional)
+            <input value={business.cryptoNote || ''} onChange={(event) => setBusiness({ ...business, cryptoNote: event.target.value })} />
+          </label>
+          <button type="button" className="button--ghost" onClick={() => persistSettings(business)}>Guardar configuración en Supabase</button>
+          <p className="small-note">Fuente actual: {dataSource}. {adminStatus}</p>
         </div>
       </div>
 
@@ -1062,6 +1284,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
             <h2>Menú editable</h2>
           </div>
           <div className="admin-actions">
+            <button className="button--ghost" onClick={reloadAdminMenu}>Recargar Supabase</button>
+            <button className="button--ghost" onClick={migrateLocalMenu}>Migrar menú local a Supabase</button>
             <button className="button--ghost" onClick={() => { setJsonDraft(JSON.stringify(menu, null, 2)); setJsonMode(!jsonMode); }}>{jsonMode ? 'Vista normal' : 'Editar JSON'}</button>
             <button className="button--danger" onClick={resetMenu}>Reset menú</button>
           </div>
@@ -1124,9 +1348,10 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
                       <div className="admin-image-slot">
                         <ProductImageManager
                           item={item}
-                          categoryId={category.id}
-                          images={productImages[item.supabaseProductId || item.id] || []}
+                          category={category}
+                          images={productImages[productImageKey(item)] || []}
                           adminPin={pin}
+                          onSaveProduct={persistProduct}
                           refreshProductImages={refreshProductImages}
                           productImagesError={productImagesError}
                         />
@@ -1177,17 +1402,23 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
 }
 
 
-function ProductImageManager({ item, categoryId, images, adminPin, refreshProductImages, productImagesError }) {
+function ProductImageManager({ item, category, images, adminPin, onSaveProduct, refreshProductImages, productImagesError }) {
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
-  const productId = item.supabaseProductId || item.id;
+  const productId = productImageKey(item);
+  const isSavedInSupabase = isSupabaseBackedProduct(item);
   const remainingSlots = Math.max(0, 5 - images.length);
 
   async function uploadFiles(event) {
     const files = Array.from(event.target.files || []).slice(0, remainingSlots);
     if (!files.length) return;
     if (!isSupabaseConfigured) {
-      setMessage('Configura VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY para usar imágenes en Supabase.');
+      setMessage('Configura Supabase para subir imágenes.');
+      event.target.value = '';
+      return;
+    }
+    if (!isSavedInSupabase || !productId) {
+      setMessage('Primero guarda este producto en Supabase.');
       event.target.value = '';
       return;
     }
@@ -1198,7 +1429,7 @@ function ProductImageManager({ item, categoryId, images, adminPin, refreshProduc
         const formData = new FormData();
         formData.append('adminPin', adminPin);
         formData.append('productId', productId);
-        formData.append('category', categoryId);
+        formData.append('category', category.id);
         formData.append('name', item.name || 'Producto');
         formData.append('description', item.description || '');
         formData.append('price', String(item.price || ''));
@@ -1220,6 +1451,23 @@ function ProductImageManager({ item, categoryId, images, adminPin, refreshProduc
     } finally {
       setUploading(false);
       event.target.value = '';
+    }
+  }
+
+  async function saveProductInSupabase() {
+    if (!isSupabaseConfigured) {
+      setMessage('Configura Supabase para subir imágenes.');
+      return;
+    }
+    setUploading(true);
+    setMessage('Guardando producto en Supabase...');
+    try {
+      await onSaveProduct(category, item, 'POST');
+      setMessage('Producto guardado en Supabase. Ya puedes subir imágenes.');
+    } catch (error) {
+      setMessage(error.message || 'No se pudo guardar el producto en Supabase.');
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -1251,7 +1499,13 @@ function ProductImageManager({ item, categoryId, images, adminPin, refreshProduc
         <span className="small-note">{images.length}/5</span>
       </div>
       {productImagesError && <p className="small-note warning-note">{productImagesError}</p>}
-      {!isSupabaseConfigured && <p className="small-note warning-note">Configura Supabase para cargar y mostrar imágenes reales.</p>}
+      {!isSupabaseConfigured && <p className="small-note warning-note">Configura Supabase para subir imágenes.</p>}
+      {isSupabaseConfigured && !isSavedInSupabase && (
+        <div className="supabase-save-notice">
+          <p className="small-note warning-note">Este producto todavía no está guardado en Supabase.</p>
+          <button type="button" className="button--ghost" onClick={saveProductInSupabase} disabled={uploading}>Guardar en Supabase</button>
+        </div>
+      )}
       <div className="admin-image-preview-list">
         {images.length === 0 && <div className="admin-image-empty">Sin imágenes en Supabase</div>}
         {images.map((image) => (
@@ -1263,7 +1517,7 @@ function ProductImageManager({ item, categoryId, images, adminPin, refreshProduc
       </div>
       <label className="file-picker">
         Subir imágenes (jpeg/png/webp, máx. 2 MB c/u)
-        <input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={uploading || remainingSlots === 0} onChange={uploadFiles} />
+        <input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={uploading || remainingSlots === 0 || !isSupabaseConfigured || !isSavedInSupabase} onChange={uploadFiles} />
       </label>
       {remainingSlots === 0 && <p className="small-note">Máximo 5 imágenes por producto.</p>}
       {uploading && <p className="small-note">Procesando imagen...</p>}
