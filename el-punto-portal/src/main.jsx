@@ -416,8 +416,10 @@ function Header({ navigateTo }) {
 
   return (
     <header className="site-header">
-      <button className="brand-mini" onClick={() => navigateTo('inicio')}>
-        {!logoError ? <img src="/images/logo-el-punto.png" alt="Logo El Punto" onError={() => setLogoError(true)} /> : <span>El Punto</span>}
+      <button className="brand-mini" onClick={() => navigateTo('inicio')} aria-label="Ir al inicio">
+        <span className="brand-logo">
+          {!logoError ? <img src="/images/logo-el-punto.png" alt="Logo El Punto" onError={() => setLogoError(true)} /> : <span className="brand-logo__fallback">El Punto</span>}
+        </span>
       </button>
       <nav className="site-nav">
         {links.map(([id, label]) => (
