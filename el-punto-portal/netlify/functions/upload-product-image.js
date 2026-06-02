@@ -60,14 +60,66 @@ function serviceHeaders(extra = {}) {
   };
 }
 
+function parseContentDisposition(value = '') {
+  return Object.fromEntries([...value.matchAll(/;\s*([^=]+)="([^"]*)"/g)].map((match) => [match[1], match[2]]));
+}
+
+function trimPartBuffer(buffer) {
+  let start = 0;
+  let end = buffer.length;
+  if (end - start >= 2 && buffer[start] === 13 && buffer[start + 1] === 10) start += 2;
+  if (end - start >= 2 && buffer[end - 2] === 13 && buffer[end - 1] === 10) end -= 2;
+  return buffer.subarray(start, end);
+}
+
 async function parseMultipart(event) {
+  const contentType = event.headers?.['content-type'] || event.headers?.['Content-Type'] || '';
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  const boundary = (boundaryMatch?.[1] || boundaryMatch?.[2] || '').trim();
+  if (!boundary) throw new Error('No se encontró boundary de multipart/form-data.');
+
   const body = Buffer.from(event.body || '', event.isBase64Encoded ? 'base64' : 'utf8');
-  const request = new Request('https://local.netlify/upload', {
-    method: 'POST',
-    headers: event.headers,
-    body
-  });
-  return request.formData();
+  const boundaryBuffer = Buffer.from(`--${boundary}`);
+  const fields = new Map();
+  let cursor = body.indexOf(boundaryBuffer);
+
+  while (cursor !== -1) {
+    cursor += boundaryBuffer.length;
+    if (body[cursor] === 45 && body[cursor + 1] === 45) break;
+
+    const nextBoundary = body.indexOf(boundaryBuffer, cursor);
+    if (nextBoundary === -1) break;
+
+    const rawPart = trimPartBuffer(body.subarray(cursor, nextBoundary));
+    const headerEnd = rawPart.indexOf(Buffer.from('\r\n\r\n'));
+    if (headerEnd !== -1) {
+      const headerText = rawPart.subarray(0, headerEnd).toString('utf8');
+      const content = rawPart.subarray(headerEnd + 4);
+      const headers = Object.fromEntries(headerText.split('\r\n').map((line) => {
+        const separator = line.indexOf(':');
+        return separator === -1 ? ['', ''] : [line.slice(0, separator).toLowerCase(), line.slice(separator + 1).trim()];
+      }).filter(([key]) => key));
+      const disposition = parseContentDisposition(headers['content-disposition'] || '');
+      if (disposition.name) {
+        if (disposition.filename !== undefined) {
+          const fileBuffer = Buffer.from(content);
+          fields.set(disposition.name, {
+            name: disposition.filename,
+            type: headers['content-type'] || 'application/octet-stream',
+            size: fileBuffer.length,
+            async arrayBuffer() {
+              return fileBuffer.buffer.slice(fileBuffer.byteOffset, fileBuffer.byteOffset + fileBuffer.byteLength);
+            }
+          });
+        } else {
+          fields.set(disposition.name, content.toString('utf8'));
+        }
+      }
+    }
+    cursor = nextBoundary;
+  }
+
+  return { get: (name) => fields.get(name) ?? null };
 }
 
 async function supabaseFetch(path, options = {}) {

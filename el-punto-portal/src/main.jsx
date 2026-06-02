@@ -670,6 +670,9 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   const [quantity, setQuantity] = useState(1);
   const [removed, setRemoved] = useState([]);
   const [imageIndex, setImageIndex] = useState(0);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
+  const [lightboxZoom, setLightboxZoom] = useState(1);
   const imageUrls = images.map((image) => image.image_url || image.imageUrl).filter(Boolean);
   const removableIngredients = removableIngredientNames(item.ingredients);
   const optionList = productOptions(item);
@@ -683,7 +686,30 @@ function ProductCard({ item, categoryId, addToCart, images }) {
 
   useEffect(() => {
     if (imageIndex >= imageUrls.length) setImageIndex(0);
-  }, [imageIndex, imageUrls.length]);
+    if (lightboxIndex >= imageUrls.length) setLightboxIndex(0);
+  }, [imageIndex, lightboxIndex, imageUrls.length]);
+
+  useEffect(() => {
+    if (!lightboxOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') setLightboxOpen(false);
+      if (event.key === 'ArrowLeft' && imageUrls.length > 1) {
+        setLightboxIndex((current) => (current - 1 + imageUrls.length) % imageUrls.length);
+        setLightboxZoom(1);
+      }
+      if (event.key === 'ArrowRight' && imageUrls.length > 1) {
+        setLightboxIndex((current) => (current + 1) % imageUrls.length);
+        setLightboxZoom(1);
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [lightboxOpen, imageUrls.length]);
 
   const basePrice = itemBasePrice(item);
   const discountPrice = itemDiscountPrice(item);
@@ -695,6 +721,23 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       ? current.filter((value) => value !== ingredient)
       : [...current, ingredient]
     );
+  }
+
+  function openImageLightbox(index = imageIndex) {
+    if (!imageUrls.length) return;
+    setLightboxIndex(index);
+    setLightboxZoom(1);
+    setLightboxOpen(true);
+  }
+
+  function moveLightboxImage(direction) {
+    if (imageUrls.length <= 1) return;
+    setLightboxIndex((current) => (current + direction + imageUrls.length) % imageUrls.length);
+    setLightboxZoom(1);
+  }
+
+  function adjustLightboxZoom(delta) {
+    setLightboxZoom((current) => Math.min(2.5, Math.max(1, Number((current + delta).toFixed(2)))));
   }
 
   function handleAdd() {
@@ -720,7 +763,9 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       <div className="product-media">
         {imageUrls.length > 0 ? (
           <>
-            <img src={imageUrls[imageIndex]} alt={item.name} className="product-media__image" />
+            <button type="button" className="product-media__open" onClick={() => openImageLightbox(imageIndex)} aria-label={`Ver imagen de ${item.name} en grande`}>
+              <img src={imageUrls[imageIndex]} alt={item.name} className="product-media__image" />
+            </button>
             {imageUrls.length > 1 && (
               <div className="product-media__controls">
                 <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex - 1 + imageUrls.length) % imageUrls.length)}>‹</button>
@@ -795,6 +840,50 @@ function ProductCard({ item, categoryId, addToCart, images }) {
         </label>
         <button disabled={!item.available} onClick={handleAdd}>{item.available ? 'Agregar' : 'Agotado'}</button>
       </div>
+
+      {lightboxOpen && imageUrls.length > 0 && (
+        <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={`Imagen de ${item.name}`} onClick={() => setLightboxOpen(false)}>
+          <div className="image-lightbox__content" onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="image-lightbox__close" onClick={() => setLightboxOpen(false)}>Cerrar ×</button>
+            <div
+              className="image-lightbox__stage"
+              onWheel={(event) => {
+                event.preventDefault();
+                adjustLightboxZoom(event.deltaY < 0 ? 0.12 : -0.12);
+              }}
+            >
+              <img
+                src={imageUrls[lightboxIndex]}
+                alt={`${item.name} ${lightboxIndex + 1}`}
+                style={{ transform: `scale(${lightboxZoom})` }}
+              />
+            </div>
+            <div className="image-lightbox__controls">
+              {imageUrls.length > 1 && <button type="button" className="button--ghost" onClick={() => moveLightboxImage(-1)}>‹ Anterior</button>}
+              <button type="button" className="button--ghost" onClick={() => adjustLightboxZoom(-0.2)} disabled={lightboxZoom <= 1}>− Zoom</button>
+              <span>{Math.round(lightboxZoom * 100)}%</span>
+              <button type="button" className="button--ghost" onClick={() => adjustLightboxZoom(0.2)} disabled={lightboxZoom >= 2.5}>+ Zoom</button>
+              <button type="button" className="button--ghost" onClick={() => setLightboxZoom(1)}>Restablecer</button>
+              {imageUrls.length > 1 && <button type="button" className="button--ghost" onClick={() => moveLightboxImage(1)}>Siguiente ›</button>}
+            </div>
+            {imageUrls.length > 1 && (
+              <div className="image-lightbox__thumbs">
+                {imageUrls.map((url, index) => (
+                  <button
+                    type="button"
+                    key={url}
+                    className={index === lightboxIndex ? 'active' : ''}
+                    onClick={() => { setLightboxIndex(index); setLightboxZoom(1); }}
+                    aria-label={`Ver imagen ${index + 1} de ${item.name}`}
+                  >
+                    <img src={url} alt="" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </article>
   );
 }
@@ -1482,7 +1571,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <li>Cada producto se edita con estado aislado y se guarda con botón Guardar producto.</li>
               <li>Ingredientes se agregan con input enfocado, Enter y persistencia al guardar.</li>
               <li>Descuento activo se guarda explícitamente como discount_active boolean y se recarga desde Supabase.</li>
-              <li>Subida de imágenes devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
+              <li>Subida de imágenes usa parser multipart propio, devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
+              <li>Las imágenes del menú público se pueden abrir en visor con zoom, teclado y navegación.</li>
               <li>Teléfono/WhatsApp del negocio: 614 608 7217 / 526146087217.</li>
             </ul>
           </div>
