@@ -177,13 +177,22 @@ function formatMoney(value) {
   return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value);
 }
 
-function hasNumericPrice(item) {
-  const price = Number(item?.price);
-  return Number.isFinite(price) && price > 0;
+function itemNumericPrice(item) {
+  const candidates = [item?.price, item?.unitPrice, item?.unit_price];
+  for (const value of candidates) {
+    if (value === null || value === undefined || value === '') continue;
+    const price = Number(value);
+    if (Number.isFinite(price) && price > 0) return price;
+  }
+  return null;
 }
 
-function cartHasPriceConfirmation(cart) {
-  return cart.some((item) => !hasNumericPrice(item) || /precio por confirmar/i.test(item.priceLabel || ''));
+function hasNumericPrice(item) {
+  return itemNumericPrice(item) !== null;
+}
+
+function cartItemsMissingPrice(cart) {
+  return cart.filter((item) => !hasNumericPrice(item));
 }
 
 function paymentLabel(value) {
@@ -269,7 +278,7 @@ function ensureSessionMetric() {
 
 function calculateLine(item) {
   const proteinExtra = Object.values(item.selectedOptions || {}).some((value) => String(value).includes('+$25'));
-  return (Number(item.price) || 0) + (proteinExtra ? 25 : 0);
+  return (itemNumericPrice(item) || 0) + (proteinExtra ? 25 : 0);
 }
 
 function createOrderNumber() {
@@ -699,10 +708,24 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkoutError, setCheckoutError] = useState('');
   const selectedPaymentLabel = paymentLabel(payment);
-  const hasPriceConfirmation = cartHasPriceConfirmation(cart);
+  const itemsMissingPrice = useMemo(() => cartItemsMissingPrice(cart), [cart]);
+  const hasPriceConfirmation = itemsMissingPrice.length > 0;
   const isCartTotalNumeric = Number.isFinite(Number(cartTotal)) && Number(cartTotal) > 0;
-  const isOnlinePaymentReady = cart.length > 0 && isCartTotalNumeric && !hasPriceConfirmation;
+  const checkoutDisabledReason = !cart.length
+    ? 'empty_cart'
+    : hasPriceConfirmation
+      ? 'missing_prices'
+      : !isCartTotalNumeric
+        ? 'invalid_total'
+        : '';
+  const isOnlinePaymentReady = payment === 'pago_en_linea' && !checkoutDisabledReason;
   const cryptoWallets = cryptoWalletsFromBusiness(business);
+
+  useEffect(() => {
+    if (payment === 'pago_en_linea' && checkoutDisabledReason) {
+      console.warn('Stripe checkout disabled reason:', checkoutDisabledReason);
+    }
+  }, [payment, checkoutDisabledReason]);
 
   function getLocation() {
     if (!navigator.geolocation) {
@@ -864,10 +887,15 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
           <div className="payment-info-card">
             <p>Paga de forma segura con tarjeta antes de enviar tu pedido.</p>
             {hasPriceConfirmation && (
-              <p className="small-note warning-note">Este pedido requiere confirmación por WhatsApp antes de pagar.</p>
+              <div className="small-note warning-note">
+                <p>Este pedido tiene productos con precio por confirmar.</p>
+                {itemsMissingPrice.map((item) => (
+                  <p key={item.cartId || item.id || item.name}>Falta precio: {item.name || 'Producto sin nombre'}</p>
+                ))}
+              </div>
             )}
-            {!hasPriceConfirmation && !isOnlinePaymentReady && (
-              <p className="small-note">Agrega productos con precio numérico para pagar en línea.</p>
+            {!hasPriceConfirmation && checkoutDisabledReason === 'invalid_total' && (
+              <p className="small-note warning-note">El total del pedido no es válido para pagar en línea.</p>
             )}
             {checkoutError && <p className="error-note">{checkoutError}</p>}
             <button className="button--ghost" disabled={!isOnlinePaymentReady || checkoutLoading} onClick={startStripeCheckout}>

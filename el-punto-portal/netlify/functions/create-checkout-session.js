@@ -53,8 +53,10 @@ export async function handler(event) {
     const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
     const successUrl = process.env.STRIPE_SUCCESS_URL;
     const cancelUrl = process.env.STRIPE_CANCEL_URL;
-    if (!stripeSecretKey || !successUrl || !cancelUrl) {
-      return json(500, { error: 'Faltan variables privadas de Stripe en Netlify.' });
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!stripeSecretKey || !successUrl || !cancelUrl || !supabaseUrl || !supabaseServiceRoleKey) {
+      return json(500, { error: 'Pago en línea todavía no está configurado.' });
     }
 
     const body = parseBody(event);
@@ -75,7 +77,7 @@ export async function handler(event) {
       if (!product || product.available === false) {
         throw new Error('Uno o más productos ya no están disponibles. Actualiza tu carrito e intenta de nuevo.');
       }
-      if (!isNumericPrice(product.price) || /precio por confirmar/i.test(product.price_label || '')) {
+      if (!isNumericPrice(product.price)) {
         throw new Error(PRICE_CONFIRMATION_ERROR);
       }
       const unitPrice = Number(product.price) + optionExtra(item.selectedOptions);
