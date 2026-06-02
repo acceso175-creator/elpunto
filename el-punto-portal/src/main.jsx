@@ -150,6 +150,8 @@ function normalizeMenu(menu) {
     items: (category.items || []).map((item) => ({
       ...item,
       cost: item.cost ?? null,
+      ingredientCost: item.ingredientCost ?? item.ingredient_cost ?? null,
+      packagingCost: item.packagingCost ?? item.packaging_cost ?? null,
       discountPrice: item.discountPrice ?? item.discount_price ?? null,
       discountActive: item.discountActive ?? item.discount_active ?? false,
       isSupabaseProduct: item.isSupabaseProduct === true,
@@ -212,6 +214,11 @@ function parseOptionalNumber(value) {
   if (value === '' || value === null || value === undefined) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function adminNumberInputValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? String(value) : '';
 }
 
 function formatPercent(value) {
@@ -1427,6 +1434,14 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
             <input type="password" value={pin} onChange={(event) => setPin(event.target.value)} placeholder="1234" />
           </label>
           <button onClick={login}>Entrar</button>
+          <div className="admin-update-summary">
+            <strong>Resumen de actualización</strong>
+            <ul>
+              <li>Productos cargan cost, ingredient_cost, packaging_cost y discount_price desde Supabase.</li>
+              <li>El campo Costo usa product.cost; 0 o null se muestran vacío.</li>
+              <li>La utilidad se calcula como precio - costo y el margen como utilidad / precio.</li>
+            </ul>
+          </div>
           <p className="small-note">Ojo: este PIN no es seguridad real. Para producción hay que conectar Supabase, Firebase o un backend.</p>
         </div>
       </section>
@@ -1617,15 +1632,15 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
                       </label>
                       <label>
                         Costo
-                        <input type="number" value={item.cost ?? ''} placeholder="Costo interno" onChange={(event) => updateItem(category.id, item.id, { cost: parseOptionalNumber(event.target.value) })} />
+                        <input type="number" step="0.01" value={adminNumberInputValue(item.cost)} placeholder="Costo interno" onChange={(event) => updateItem(category.id, item.id, { cost: parseOptionalNumber(event.target.value) })} />
                       </label>
                       <label>
                         Precio normal
-                        <input type="number" value={item.price ?? ''} placeholder="Precio normal" onChange={(event) => updateItem(category.id, item.id, { price: parseOptionalNumber(event.target.value) })} />
+                        <input type="number" step="0.01" value={item.price ?? ''} placeholder="Precio normal" onChange={(event) => updateItem(category.id, item.id, { price: parseOptionalNumber(event.target.value) })} />
                       </label>
                       <label>
                         Precio con descuento
-                        <input type="number" value={item.discountPrice ?? ''} placeholder="Precio descuento" onChange={(event) => updateItem(category.id, item.id, { discountPrice: parseOptionalNumber(event.target.value) })} />
+                        <input type="number" step="0.01" value={item.discountPrice ?? ''} placeholder="Precio descuento" onChange={(event) => updateItem(category.id, item.id, { discountPrice: parseOptionalNumber(event.target.value) })} />
                       </label>
                       <label className="checkbox-line admin-discount-toggle">
                         <input type="checkbox" checked={item.discountActive === true} onChange={(event) => updateItem(category.id, item.id, { discountActive: event.target.checked })} />

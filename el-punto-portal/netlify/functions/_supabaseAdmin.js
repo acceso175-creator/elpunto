@@ -65,8 +65,8 @@ function isOptionsSchemaCacheError(error) {
 
 async function productsSnapshot(supabase, includeUnavailable, includeOptions = true) {
   const fields = includeOptions
-    ? 'id, category_id, name, description, price, cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)'
-    : 'id, category_id, name, description, price, cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)';
+    ? 'id, category_id, name, description, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)'
+    : 'id, category_id, name, description, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)';
   let productQuery = supabase
     .from('products')
     .select(fields)

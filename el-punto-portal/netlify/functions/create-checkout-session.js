@@ -50,7 +50,7 @@ function cleanCartItem(item) {
 async function loadProducts(supabase, productIds) {
   const { data, error } = await supabase
     .from('products')
-    .select('id, name, price, cost, discount_price, discount_active, price_label, available')
+    .select('id, name, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available')
     .in('id', productIds);
   if (error) throw new Error(error.message);
   return new Map((data || []).map((product) => [product.id, product]));

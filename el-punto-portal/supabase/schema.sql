@@ -43,6 +43,8 @@ create table if not exists public.products (
   description text,
   price numeric null,
   cost numeric null,
+  ingredient_cost numeric null,
+  packaging_cost numeric null,
   discount_price numeric null,
   discount_active boolean not null default false,
   price_label text default 'Precio por confirmar',
