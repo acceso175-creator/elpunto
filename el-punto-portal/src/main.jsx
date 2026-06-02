@@ -17,6 +17,9 @@ const STORAGE = {
 
 const ADMIN_PIN = '1234';
 const MAPS_LINK = 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7';
+const BUSINESS_WHATSAPP = '526146087217';
+const BUSINESS_PHONE_DISPLAY = '614 608 7217';
+const WHATSAPP_GREETING = 'Hola, quiero hacer un pedido en El Punto.';
 const identity = (value) => value;
 const PAYMENT_METHODS = [
   { value: 'efectivo', label: 'Efectivo' },
@@ -266,6 +269,15 @@ function paymentLabel(value) {
   return PAYMENT_METHODS.find((method) => method.value === value)?.label || 'Efectivo';
 }
 
+function businessWhatsappNumber(business) {
+  const configured = String(business?.whatsapp || '').replace(/[^0-9]/g, '');
+  return configured && configured !== '526140000000' ? configured : BUSINESS_WHATSAPP;
+}
+
+function openBusinessWhatsApp(business, message = WHATSAPP_GREETING) {
+  window.open(`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(message)}`, '_blank');
+}
+
 function cryptoWalletsFromBusiness(business) {
   if (Array.isArray(business.cryptoWallets)) return business.cryptoWallets.filter(Boolean);
   return String(business.cryptoWallets || '')
@@ -477,7 +489,7 @@ function App() {
 
   return (
     <main>
-      <Header navigateTo={navigateTo} />
+      <Header navigateTo={navigateTo} business={business} />
       <Hero navigateTo={navigateTo} />
       <LocationSection business={business} />
       
@@ -511,7 +523,7 @@ function App() {
 }
 
 
-function Header({ navigateTo }) {
+function Header({ navigateTo, business }) {
   const [logoError, setLogoError] = useState(false);
   const links = [
     ['inicio', 'Inicio'],
@@ -538,7 +550,7 @@ function Header({ navigateTo }) {
           <button key={id} className="site-nav__link" onClick={() => handleHeaderNav(id)}>{label}</button>
         ))}
       </nav>
-      <button className="site-header__cta" onClick={() => navigateTo('menu')}>Hacer pedido</button>
+      <button className="site-header__cta" onClick={() => openBusinessWhatsApp(business)}>Hacer pedido</button>
     </header>
   );
 }
@@ -902,7 +914,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
       alert('Para domicilio agrega dirección o ubicación antes de mandar el pedido.');
       return;
     }
-    const number = String(business.whatsapp || '').replace(/[^0-9]/g, '');
+    const number = businessWhatsappNumber(business);
     if (!number) {
       alert('Falta configurar el número de WhatsApp en Admin.');
       return;
@@ -1037,7 +1049,7 @@ function PaymentResultPage({ type, business }) {
   const isSuccess = type === 'success';
 
   function sendPaymentWhatsApp() {
-    const number = String(business.whatsapp || '').replace(/[^0-9]/g, '');
+    const number = businessWhatsappNumber(business);
     if (!number) {
       alert('Falta configurar el número de WhatsApp en Admin.');
       return;
@@ -1469,7 +1481,9 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <li>El menú público usa precio efectivo: descuento activo válido menor que precio normal; si no, precio normal.</li>
               <li>Cada producto se edita con estado aislado y se guarda con botón Guardar producto.</li>
               <li>Ingredientes se agregan con input enfocado, Enter y persistencia al guardar.</li>
+              <li>Descuento activo se guarda explícitamente como discount_active boolean y se recarga desde Supabase.</li>
               <li>Subida de imágenes devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
+              <li>Teléfono/WhatsApp del negocio: 614 608 7217 / 526146087217.</li>
             </ul>
           </div>
           <p className="small-note">Ojo: este PIN no es seguridad real. Para producción hay que conectar Supabase, Firebase o un backend.</p>
@@ -1733,9 +1747,24 @@ function AdminProductEditor({ item, category, adminCategories, productImages, ad
 
   async function saveProduct() {
     const targetCategory = adminCategories.find((categoryOption) => categoryOption.id === draft.categoryId) || category;
+    const productToSave = {
+      ...draft,
+      discountActive: draft.discountActive === true,
+      discount_active: draft.discountActive === true,
+      discountPrice: parseOptionalNumber(draft.discountPrice),
+      discount_price: parseOptionalNumber(draft.discountPrice),
+      price: parseOptionalNumber(draft.price),
+      cost: parseOptionalNumber(draft.cost),
+      ingredients: normalizeIngredients(draft.ingredients)
+    };
+    console.log('Guardando descuento', productToSave.name, {
+      price: productToSave.price,
+      discount_price: productToSave.discount_price,
+      discount_active: productToSave.discount_active
+    });
     setSaveStatus('Guardando...');
     try {
-      await persistProduct(targetCategory, { ...draft, ingredients: normalizeIngredients(draft.ingredients) }, 'PATCH');
+      await persistProduct(targetCategory, productToSave, 'PATCH');
       setSaveStatus('Guardado');
     } catch (error) {
       setSaveStatus(error.message || 'Error al guardar producto.');
@@ -1762,7 +1791,7 @@ function AdminProductEditor({ item, category, adminCategories, productImages, ad
           <input type="number" step="0.01" value={draft.discountPrice ?? ''} placeholder="Precio descuento" onChange={(event) => patchDraft({ discountPrice: parseOptionalNumber(event.target.value) })} />
         </label>
         <label className="checkbox-line admin-discount-toggle">
-          <input type="checkbox" checked={draft.discountActive === true} onChange={(event) => patchDraft({ discountActive: event.target.checked })} />
+          <input type="checkbox" checked={isDiscountActive(draft)} onChange={(event) => patchDraft({ discountActive: event.target.checked, discount_active: event.target.checked })} />
           Descuento activo
         </label>
         <label>
@@ -2019,6 +2048,7 @@ function Footer({ business }) {
       <strong>{business.name}</strong>
       <span>{business.subtitle}</span>
       <span>{business.address}</span>
+      <a href={`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(WHATSAPP_GREETING)}`}>Tel. {BUSINESS_PHONE_DISPLAY}</a>
     </footer>
   );
 }

@@ -17,6 +17,10 @@ function optionalNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function booleanValue(value) {
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
 function cleanProductPayload(product, categoryId) {
   const priceNumber = optionalNumber(product.price);
   const costNumber = optionalNumber(product.cost);
@@ -33,7 +37,7 @@ function cleanProductPayload(product, categoryId) {
     ingredient_cost: Number.isFinite(ingredientCostNumber) ? ingredientCostNumber : null,
     packaging_cost: Number.isFinite(packagingCostNumber) ? packagingCostNumber : null,
     discount_price: Number.isFinite(discountPriceNumber) ? discountPriceNumber : null,
-    discount_active: product.discountActive === true || product.discount_active === true,
+    discount_active: booleanValue(product.discount_active ?? product.discountActive),
     price_label: product.priceLabel || product.price_label || 'Precio por confirmar',
     available: product.available !== false,
     favorite: product.favorite === true,
