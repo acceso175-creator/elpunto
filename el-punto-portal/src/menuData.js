@@ -1,7 +1,7 @@
 export const businessDefaults = {
   name: 'El Punto',
   subtitle: 'Food To Go',
-  whatsapp: '526140000000',
+  whatsapp: '526145999748',
   googleMapsUrl: 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7',
   address: 'Centro, Chihuahua, Chih.',
   cryptoBtcWallet: '',

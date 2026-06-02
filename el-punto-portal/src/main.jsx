@@ -11,11 +11,17 @@ const STORAGE = {
   metrics: 'elpunto_metrics_v1',
   profile: 'elpunto_profile_v1',
   cart: 'elpunto_cart_v1',
-  session: 'elpunto_session_v1'
+  session: 'elpunto_session_v1',
+  lastStripeOrder: 'elpunto_last_stripe_order_v1'
 };
 
 const ADMIN_PIN = '1234';
 const MAPS_LINK = 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7';
+const WHATSAPP_PHONE_RAW = '526145999748';
+const WHATSAPP_PHONE_DISPLAY = '614 599 9748';
+const BUSINESS_WHATSAPP = WHATSAPP_PHONE_RAW;
+const BUSINESS_PHONE_DISPLAY = WHATSAPP_PHONE_DISPLAY;
+const WHATSAPP_GREETING = 'Hola, quiero hacer un pedido en El Punto.';
 const identity = (value) => value;
 const PAYMENT_METHODS = [
   { value: 'efectivo', label: 'Efectivo' },
@@ -35,7 +41,7 @@ function mapBusinessSettings(row) {
     id: row.id,
     name: row.business_name || businessDefaults.name,
     subtitle: row.subtitle || businessDefaults.subtitle,
-    whatsapp: row.whatsapp_number || businessDefaults.whatsapp,
+    whatsapp: normalizeBusinessWhatsapp(row.whatsapp_number || businessDefaults.whatsapp),
     googleMapsUrl: row.google_maps_url || businessDefaults.googleMapsUrl,
     cryptoBtcWallet: row.crypto_btc_wallet || '',
     cryptoEthWallet: row.crypto_eth_wallet || '',
@@ -51,8 +57,10 @@ function mapBusinessSettings(row) {
 }
 
 async function adminRequest(functionName, { method = 'POST', pin, body = {} } = {}) {
-  const response = await fetch(`/.netlify/functions/${functionName}`, {
+  const endpoint = `/.netlify/functions/${functionName}${method === 'GET' ? `?t=${Date.now()}` : ''}`;
+  const response = await fetch(endpoint, {
     method,
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
       ...(pin ? { 'x-admin-pin': pin } : {})
@@ -115,12 +123,12 @@ function categoryExists(menu, name) {
 
 function categoryOptions(menu) {
   const byId = new Map();
-  BASE_CATEGORY_NAMES.forEach((name) => {
+  BASE_CATEGORY_NAMES.forEach((name, index) => {
     const category = menu.find((item) => slugify(item.name) === slugify(name) || item.id === slugify(name));
-    byId.set(slugify(name), category || createCategory(name));
+    byId.set(slugify(name), category || { ...createCategory(name), sortOrder: index });
   });
-  menu.forEach((category) => byId.set(category.id || slugify(category.name), category));
-  return [...byId.values()];
+  menu.forEach((category, index) => byId.set(category.id || slugify(category.name), { ...category, sortOrder: Number(category.sortOrder ?? category.sort_order ?? index) }));
+  return [...byId.values()].sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0) || String(a.name).localeCompare(String(b.name)));
 }
 
 function normalizeIngredients(ingredients) {
@@ -140,19 +148,25 @@ function normalizeIngredients(ingredients) {
 
 function normalizeMenu(menu) {
   if (!Array.isArray(menu)) return normalizeMenu(initialMenu);
-  return menu.map((category) => ({
+  return menu.map((category, categoryIndex) => ({
     ...category,
     id: category.id || slugify(category.name),
     name: category.name || 'Categoría',
     description: category.description || categoryDescription(category.name),
+    sortOrder: Number(category.sortOrder ?? category.sort_order ?? categoryIndex),
     items: (category.items || []).map((item) => ({
       ...item,
+      cost: item.cost ?? null,
+      ingredientCost: item.ingredientCost ?? item.ingredient_cost ?? null,
+      packagingCost: item.packagingCost ?? item.packaging_cost ?? null,
+      discountPrice: item.discountPrice ?? item.discount_price ?? null,
+      discountActive: item.discountActive ?? item.discount_active ?? false,
       isSupabaseProduct: item.isSupabaseProduct === true,
       supabaseProductId: item.isSupabaseProduct === true && isUuid(item.supabaseProductId || item.id) ? (item.supabaseProductId || item.id) : undefined,
       images: Array.isArray(item.images) ? item.images.filter((image) => typeof image === 'string' && !image.startsWith('data:')) : [],
       ingredients: normalizeIngredients(item.ingredients)
     }))
-  }));
+  })).sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0) || String(a.name).localeCompare(String(b.name)));
 }
 
 function removableIngredientNames(ingredients) {
@@ -172,12 +186,110 @@ function usePersistedState(key, fallback, normalize = identity) {
 }
 
 function formatMoney(value) {
-  if (!value) return 'Precio por confirmar';
-  return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value);
+  if (value === null || value === undefined || value === '' || Number.isNaN(Number(value))) return 'Precio por confirmar';
+  return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(Number(value));
+}
+
+function numericValue(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function itemBasePrice(item) {
+  return numericValue(item?.price ?? item?.unitPrice ?? item?.unit_price);
+}
+
+function itemDiscountPrice(item) {
+  return numericValue(item?.discount_price ?? item?.discountPrice);
+}
+
+function isDiscountActive(product) {
+  return product?.discount_active === true || product?.discountActive === true || product?.discount_active === 'true' || product?.discountActive === 'true' || product?.discount_active === 1 || product?.discountActive === 1;
+}
+
+function hasValidDiscount(product) {
+  const price = Number(product?.price || 0);
+  const discountPrice = Number(product?.discount_price ?? product?.discountPrice ?? 0);
+  return isDiscountActive(product) && Number.isFinite(price) && price > 0 && Number.isFinite(discountPrice) && discountPrice > 0 && discountPrice < price;
+}
+
+function getEffectivePrice(product) {
+  const price = Number(product?.price ?? product?.unitPrice ?? product?.unit_price ?? 0);
+  const discountPrice = Number(product?.discount_price ?? product?.discountPrice ?? 0);
+  if (hasValidDiscount(product)) return discountPrice;
+  return Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function hasActiveDiscount(item) {
+  return hasValidDiscount(item);
+}
+
+function itemNumericPrice(item) {
+  return getEffectivePrice(item);
+}
+
+function hasNumericPrice(item) {
+  return itemNumericPrice(item) !== null;
+}
+
+function parseOptionalNumber(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function adminNumberInputValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? String(value) : '';
+}
+
+function formatPercent(value) {
+  if (!Number.isFinite(value)) return '—';
+  return `${value.toFixed(1)}%`;
+}
+
+function productProfitMetrics(item) {
+  const rawCost = item?.cost;
+  const costNumber = rawCost === null || rawCost === undefined || rawCost === '' ? null : Number(rawCost);
+  const cost = Number.isFinite(costNumber) && costNumber >= 0 ? costNumber : null;
+  const price = itemBasePrice(item);
+  const discount = itemDiscountPrice(item);
+  return {
+    normalProfit: cost !== null && price !== null ? price - cost : null,
+    discountProfit: cost !== null && discount !== null ? discount - cost : null,
+    normalMargin: cost !== null && price !== null ? ((price - cost) / price) * 100 : null,
+    discountMargin: cost !== null && discount !== null ? ((discount - cost) / discount) * 100 : null
+  };
+}
+
+function cartItemsMissingPrice(cart) {
+  return cart.filter((item) => !hasNumericPrice(item));
 }
 
 function paymentLabel(value) {
   return PAYMENT_METHODS.find((method) => method.value === value)?.label || 'Efectivo';
+}
+
+function normalizeBusinessWhatsapp(value) {
+  const configured = String(value || '').replace(/[^0-9]/g, '');
+  return configured === WHATSAPP_PHONE_RAW ? configured : WHATSAPP_PHONE_RAW;
+}
+
+function businessWhatsappNumber(business) {
+  return normalizeBusinessWhatsapp(business?.whatsapp);
+}
+
+function normalizeBusiness(business) {
+  return {
+    ...businessDefaults,
+    ...(business || {}),
+    whatsapp: normalizeBusinessWhatsapp(business?.whatsapp)
+  };
+}
+
+function openBusinessWhatsApp(business, message = WHATSAPP_GREETING) {
+  window.open(`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(message)}`, '_blank');
 }
 
 function cryptoWalletsFromBusiness(business) {
@@ -259,7 +371,7 @@ function ensureSessionMetric() {
 
 function calculateLine(item) {
   const proteinExtra = Object.values(item.selectedOptions || {}).some((value) => String(value).includes('+$25'));
-  return (Number(item.price) || 0) + (proteinExtra ? 25 : 0);
+  return (itemNumericPrice(item) || 0) + (proteinExtra ? 25 : 0);
 }
 
 function createOrderNumber() {
@@ -275,17 +387,26 @@ function createOrderNumber() {
 
 function App() {
   const [menu, setMenu] = usePersistedState(STORAGE.menu, normalizeMenu(initialMenu), normalizeMenu);
-  const [business, setBusiness] = usePersistedState(STORAGE.business, businessDefaults);
+  const [business, setBusiness] = usePersistedState(STORAGE.business, normalizeBusiness(businessDefaults), normalizeBusiness);
   const [cart, setCart] = usePersistedState(STORAGE.cart, []);
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
-  const isAdminPath = window.location.pathname === '/admin';
-  const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : 'inicio');
+  const currentPath = window.location.pathname;
+  const isAdminPath = currentPath === '/admin';
+  const isPaymentSuccessPath = currentPath === '/payment-success';
+  const isPaymentCancelPath = currentPath === '/payment-cancel';
+  const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : (window.location.hash === '#pedido' ? 'pedido' : 'inicio'));
   const [productImages, setProductImages] = useState({});
   const [productImagesError, setProductImagesError] = useState('');
   const [dataSource, setDataSource] = useState(isSupabaseConfigured ? 'loading' : 'local');
 
   useEffect(() => {
     ensureSessionMetric();
+  }, []);
+
+  useEffect(() => {
+    if (window.location.hash === '#pedido') {
+      window.setTimeout(() => document.getElementById('pedido')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+    }
   }, []);
 
   useEffect(() => {
@@ -365,6 +486,10 @@ function App() {
     }, 50);
   }
 
+  if (isPaymentSuccessPath || isPaymentCancelPath) {
+    return <PaymentResultPage type={isPaymentSuccessPath ? 'success' : 'cancel'} business={business} />;
+  }
+
   if (isAdminPath) {
     return (
       <main className="admin-route">
@@ -378,7 +503,7 @@ function App() {
 
   return (
     <main>
-      <Header navigateTo={navigateTo} />
+      <Header navigateTo={navigateTo} business={business} />
       <Hero navigateTo={navigateTo} />
       <LocationSection business={business} />
       
@@ -412,7 +537,7 @@ function App() {
 }
 
 
-function Header({ navigateTo }) {
+function Header({ navigateTo, business }) {
   const [logoError, setLogoError] = useState(false);
   const links = [
     ['inicio', 'Inicio'],
@@ -439,7 +564,7 @@ function Header({ navigateTo }) {
           <button key={id} className="site-nav__link" onClick={() => handleHeaderNav(id)}>{label}</button>
         ))}
       </nav>
-      <button className="site-header__cta" onClick={() => navigateTo('menu')}>Hacer pedido</button>
+      <button className="site-header__cta" onClick={() => openBusinessWhatsApp(business)}>Hacer pedido</button>
     </header>
   );
 }
@@ -559,6 +684,9 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   const [quantity, setQuantity] = useState(1);
   const [removed, setRemoved] = useState([]);
   const [imageIndex, setImageIndex] = useState(0);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
+  const [lightboxZoom, setLightboxZoom] = useState(1);
   const imageUrls = images.map((image) => image.image_url || image.imageUrl).filter(Boolean);
   const removableIngredients = removableIngredientNames(item.ingredients);
   const optionList = productOptions(item);
@@ -572,7 +700,35 @@ function ProductCard({ item, categoryId, addToCart, images }) {
 
   useEffect(() => {
     if (imageIndex >= imageUrls.length) setImageIndex(0);
-  }, [imageIndex, imageUrls.length]);
+    if (lightboxIndex >= imageUrls.length) setLightboxIndex(0);
+  }, [imageIndex, lightboxIndex, imageUrls.length]);
+
+  useEffect(() => {
+    if (!lightboxOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') setLightboxOpen(false);
+      if (event.key === 'ArrowLeft' && imageUrls.length > 1) {
+        setLightboxIndex((current) => (current - 1 + imageUrls.length) % imageUrls.length);
+        setLightboxZoom(1);
+      }
+      if (event.key === 'ArrowRight' && imageUrls.length > 1) {
+        setLightboxIndex((current) => (current + 1) % imageUrls.length);
+        setLightboxZoom(1);
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [lightboxOpen, imageUrls.length]);
+
+  const basePrice = itemBasePrice(item);
+  const discountPrice = itemDiscountPrice(item);
+  const effectivePrice = getEffectivePrice(item);
+  const showDiscount = hasValidDiscount(item);
 
   function toggleIngredient(ingredient) {
     setRemoved((current) => current.includes(ingredient)
@@ -581,12 +737,34 @@ function ProductCard({ item, categoryId, addToCart, images }) {
     );
   }
 
+  function openImageLightbox(index = imageIndex) {
+    if (!imageUrls.length) return;
+    setLightboxIndex(index);
+    setLightboxZoom(1);
+    setLightboxOpen(true);
+  }
+
+  function moveLightboxImage(direction) {
+    if (imageUrls.length <= 1) return;
+    setLightboxIndex((current) => (current + direction + imageUrls.length) % imageUrls.length);
+    setLightboxZoom(1);
+  }
+
+  function adjustLightboxZoom(delta) {
+    setLightboxZoom((current) => Math.min(2.5, Math.max(1, Number((current + delta).toFixed(2)))));
+  }
+
   function handleAdd() {
     addToCart({
       id: item.id,
+      supabaseProductId: item.supabaseProductId || (isUuid(item.id) ? item.id : undefined),
       categoryId,
       name: item.name,
       price: item.price,
+      priceLabel: item.priceLabel,
+      discountPrice: item.discountPrice,
+      discountActive: item.discountActive,
+      effectivePrice,
       quantity,
       removedIngredients: removed,
       selectedOptions,
@@ -599,7 +777,9 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       <div className="product-media">
         {imageUrls.length > 0 ? (
           <>
-            <img src={imageUrls[imageIndex]} alt={item.name} className="product-media__image" />
+            <button type="button" className="product-media__open" onClick={() => openImageLightbox(imageIndex)} aria-label={`Ver imagen de ${item.name} en grande`}>
+              <img src={imageUrls[imageIndex]} alt={item.name} className="product-media__image" />
+            </button>
             {imageUrls.length > 1 && (
               <div className="product-media__controls">
                 <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex - 1 + imageUrls.length) % imageUrls.length)}>‹</button>
@@ -619,7 +799,21 @@ function ProductCard({ item, categoryId, addToCart, images }) {
         </div>
         {item.badge && <span className="badge">{item.badge}</span>}
       </div>
-      <strong className="price">{item.price ? formatMoney(item.price) : (item.priceLabel || 'Precio por confirmar')}</strong>
+      {basePrice ? (
+        <div className={showDiscount ? 'price-stack' : 'price'}>
+          {showDiscount ? (
+            <>
+              <span className="price-old">{formatMoney(basePrice)}</span>
+              <strong className="price-discount">{formatMoney(discountPrice)}</strong>
+              <span className="badge promo-badge">Promo</span>
+            </>
+          ) : (
+            <strong>{formatMoney(basePrice)}</strong>
+          )}
+        </div>
+      ) : (
+        <strong className="price">{item.priceLabel || 'Precio por confirmar'}</strong>
+      )}
 
       {optionList.length > 0 && (
         <div className="modifiers">
@@ -660,6 +854,50 @@ function ProductCard({ item, categoryId, addToCart, images }) {
         </label>
         <button disabled={!item.available} onClick={handleAdd}>{item.available ? 'Agregar' : 'Agotado'}</button>
       </div>
+
+      {lightboxOpen && imageUrls.length > 0 && (
+        <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={`Imagen de ${item.name}`} onClick={() => setLightboxOpen(false)}>
+          <div className="image-lightbox__content" onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="image-lightbox__close" onClick={() => setLightboxOpen(false)}>Cerrar ×</button>
+            <div
+              className="image-lightbox__stage"
+              onWheel={(event) => {
+                event.preventDefault();
+                adjustLightboxZoom(event.deltaY < 0 ? 0.12 : -0.12);
+              }}
+            >
+              <img
+                src={imageUrls[lightboxIndex]}
+                alt={`${item.name} ${lightboxIndex + 1}`}
+                style={{ transform: `scale(${lightboxZoom})` }}
+              />
+            </div>
+            <div className="image-lightbox__controls">
+              {imageUrls.length > 1 && <button type="button" className="button--ghost" onClick={() => moveLightboxImage(-1)}>‹ Anterior</button>}
+              <button type="button" className="button--ghost" onClick={() => adjustLightboxZoom(-0.2)} disabled={lightboxZoom <= 1}>− Zoom</button>
+              <span>{Math.round(lightboxZoom * 100)}%</span>
+              <button type="button" className="button--ghost" onClick={() => adjustLightboxZoom(0.2)} disabled={lightboxZoom >= 2.5}>+ Zoom</button>
+              <button type="button" className="button--ghost" onClick={() => setLightboxZoom(1)}>Restablecer</button>
+              {imageUrls.length > 1 && <button type="button" className="button--ghost" onClick={() => moveLightboxImage(1)}>Siguiente ›</button>}
+            </div>
+            {imageUrls.length > 1 && (
+              <div className="image-lightbox__thumbs">
+                {imageUrls.map((url, index) => (
+                  <button
+                    type="button"
+                    key={url}
+                    className={index === lightboxIndex ? 'active' : ''}
+                    onClick={() => { setLightboxIndex(index); setLightboxZoom(1); }}
+                    aria-label={`Ver imagen ${index + 1} de ${item.name}`}
+                  >
+                    <img src={url} alt="" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </article>
   );
 }
@@ -671,9 +909,27 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
   const [geoLink, setGeoLink] = useState('');
   const [notes, setNotes] = useState('');
   const [isLocating, setIsLocating] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [checkoutError, setCheckoutError] = useState('');
   const selectedPaymentLabel = paymentLabel(payment);
-  const isOnlinePaymentReady = Boolean(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY) && cartTotal > 0;
+  const itemsMissingPrice = useMemo(() => cartItemsMissingPrice(cart), [cart]);
+  const hasPriceConfirmation = itemsMissingPrice.length > 0;
+  const isCartTotalNumeric = Number.isFinite(Number(cartTotal)) && Number(cartTotal) > 0;
+  const checkoutDisabledReason = !cart.length
+    ? 'empty_cart'
+    : hasPriceConfirmation
+      ? 'missing_prices'
+      : !isCartTotalNumeric
+        ? 'invalid_total'
+        : '';
+  const isOnlinePaymentReady = payment === 'pago_en_linea' && !checkoutDisabledReason;
   const cryptoWallets = cryptoWalletsFromBusiness(business);
+
+  useEffect(() => {
+    if (payment === 'pago_en_linea' && checkoutDisabledReason) {
+      console.warn('Stripe checkout disabled reason:', checkoutDisabledReason);
+    }
+  }, [payment, checkoutDisabledReason]);
 
   function getLocation() {
     if (!navigator.geolocation) {
@@ -695,8 +951,8 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
     );
   }
 
-  function buildMessage() {
-    const orderNumber = createOrderNumber();
+  function buildMessage(forStripeOrderNumber = '') {
+    const orderNumber = forStripeOrderNumber || createOrderNumber();
     const items = cart.map((item, index) => {
       const opts = Object.entries(item.selectedOptions || {})
         .map(([key, value]) => `${key}: ${value}`)
@@ -713,12 +969,46 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
 
     const totalText = cartTotal ? formatMoney(cartTotal) : 'Por confirmar';
     const paymentNote = payment === 'pago_en_linea'
-      ? '\nPago en línea seleccionado. Pendiente de confirmación.'
+      ? '\nEstado: pendiente de pago'
       : payment === 'criptomonedas'
         ? '\nPago con criptomonedas seleccionado. Solicito datos de pago.'
         : '';
 
     return `Hola, quiero hacer un pedido en El Punto.\n\nOrden: ${orderNumber}\nNombre: ${profile.name || 'Cliente'}\nTeléfono: ${profile.phone || 'No capturado'}\nMétodo de pago: ${selectedPaymentLabel}${paymentNote}\n${orderType === 'domicilio' ? 'Tipo: A domicilio' : 'Tipo: Para recoger'}${locationText}\n\nPedido:\n${items}\n\nTotal estimado: ${totalText}\nNotas: ${notes || 'Sin notas'}\n\nPor favor confírmenme disponibilidad y tiempo estimado.`;
+  }
+
+  async function startStripeCheckout() {
+    if (!isOnlinePaymentReady || checkoutLoading) return;
+    if (orderType === 'domicilio' && !address && !geoLink) {
+      setCheckoutError('Para domicilio agrega dirección o ubicación antes de pagar.');
+      return;
+    }
+    setCheckoutLoading(true);
+    setCheckoutError('');
+    try {
+      const whatsappMessage = buildMessage();
+      const response = await fetch('/.netlify/functions/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cart,
+          customerName: profile.name,
+          customerPhone: profile.phone,
+          orderType,
+          deliveryAddress: orderType === 'domicilio' ? [address, geoLink].filter(Boolean).join(' | ') : '',
+          notes,
+          paymentMethod: payment,
+          whatsappMessage
+        })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'No se pudo iniciar el pago con tarjeta.');
+      writeStorage(STORAGE.lastStripeOrder, { orderId: result.orderId, orderNumber: result.orderNumber, customerName: profile.name, customerPhone: profile.phone });
+      window.location.href = result.checkoutUrl;
+    } catch (error) {
+      setCheckoutError(error.message || 'No se pudo iniciar el pago con tarjeta.');
+      setCheckoutLoading(false);
+    }
   }
 
   function sendWhatsApp() {
@@ -727,7 +1017,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
       alert('Para domicilio agrega dirección o ubicación antes de mandar el pedido.');
       return;
     }
-    const number = String(business.whatsapp || '').replace(/[^0-9]/g, '');
+    const number = businessWhatsappNumber(business);
     if (!number) {
       alert('Falta configurar el número de WhatsApp en Admin.');
       return;
@@ -800,10 +1090,21 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
         {payment === 'pago_en_linea' && (
           <div className="payment-info-card">
             <p>Paga de forma segura con tarjeta antes de enviar tu pedido.</p>
-            {!isOnlinePaymentReady && (
-              <p className="small-note">Pago en línea todavía no está configurado o el pedido requiere confirmar precio por WhatsApp.</p>
+            {hasPriceConfirmation && (
+              <div className="small-note warning-note">
+                <p>Este pedido tiene productos con precio por confirmar.</p>
+                {itemsMissingPrice.map((item) => (
+                  <p key={item.cartId || item.id || item.name}>Falta precio: {item.name || 'Producto sin nombre'}</p>
+                ))}
+              </div>
             )}
-            <button className="button--ghost" disabled={!isOnlinePaymentReady}>Pagar con tarjeta</button>
+            {!hasPriceConfirmation && checkoutDisabledReason === 'invalid_total' && (
+              <p className="small-note warning-note">El total del pedido no es válido para pagar en línea.</p>
+            )}
+            {checkoutError && <p className="error-note">{checkoutError}</p>}
+            <button className="button--ghost" disabled={!isOnlinePaymentReady || checkoutLoading} onClick={startStripeCheckout}>
+              {checkoutLoading ? 'Creando pago...' : 'Pagar con tarjeta'}
+            </button>
           </div>
         )}
 
@@ -840,6 +1141,40 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
         <p className="small-note">El portal genera el mensaje. El pedido queda confirmado hasta que el negocio responda por WhatsApp.</p>
       </div>
     </section>
+  );
+}
+
+
+function PaymentResultPage({ type, business }) {
+  const params = new URLSearchParams(window.location.search);
+  const storedOrder = readStorage(STORAGE.lastStripeOrder, {});
+  const orderNumber = params.get('order_number') || storedOrder.orderNumber || '';
+  const isSuccess = type === 'success';
+
+  function sendPaymentWhatsApp() {
+    const number = businessWhatsappNumber(business);
+    if (!number) {
+      alert('Falta configurar el número de WhatsApp en Admin.');
+      return;
+    }
+    const message = `Pago en línea realizado. Favor de confirmar mi pedido.${orderNumber ? `\nNúmero de orden: ${orderNumber}` : ''}`;
+    window.open(`https://wa.me/${number}?text=${encodeURIComponent(message)}`, '_blank');
+  }
+
+  return (
+    <main>
+      <section className="section payment-result">
+        <div className="panel narrow">
+          <p className="eyebrow">{isSuccess ? 'Pago recibido' : 'Pago cancelado'}</p>
+          <h1>{isSuccess ? 'Pago recibido. Tu pedido está en proceso de confirmación.' : 'Pago cancelado. Puedes intentar de nuevo o mandar tu pedido por WhatsApp.'}</h1>
+          {orderNumber && <p className="success">Orden: {orderNumber}</p>}
+          <div className="payment-result__actions">
+            {isSuccess && <button onClick={sendPaymentWhatsApp}>Enviar detalles por WhatsApp</button>}
+            <a className="button--ghost" href={isSuccess ? '/' : '/#pedido'}>{isSuccess ? 'Volver al inicio' : 'Volver al pedido'}</a>
+          </div>
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -893,6 +1228,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonDraft, setJsonDraft] = useState(JSON.stringify(menu, null, 2));
   const [adminStatus, setAdminStatus] = useState('');
+  const [orders, setOrders] = useState([]);
+  const [ordersStatus, setOrdersStatus] = useState('');
 
   useEffect(() => {
     const refresh = () => setMetrics(readStorage(STORAGE.metrics, defaultMetrics()));
@@ -910,22 +1247,44 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     if (pin !== ADMIN_PIN) alert('PIN incorrecto. En modo local el PIN demo es 1234.');
   }
 
+  async function loadOrders() {
+    if (!isSupabaseConfigured) return;
+    try {
+      const result = await adminRequest('admin-orders', { method: 'GET', pin });
+      setOrders(result.orders || []);
+      setOrdersStatus('Órdenes sincronizadas.');
+    } catch (error) {
+      setOrdersStatus(error.message);
+    }
+  }
+
   async function reloadAdminMenu() {
     if (!isSupabaseConfigured) return;
     try {
+      setDataSource('supabase-loading');
+      setAdminStatus('Cargando productos reales desde Supabase...');
+      localStorage.removeItem(STORAGE.menu);
+      setMenu([]);
       const snapshot = await adminRequest('admin-products', { method: 'GET', pin });
-      setMenu(menuFromAdminSnapshot(snapshot));
+      const nextMenu = menuFromAdminSnapshot(snapshot);
+      setMenu(nextMenu);
       setDataSource('supabase-admin');
-      setAdminStatus('Menú sincronizado con Supabase.');
+      console.info('Admin products source:', 'supabase', { categories: snapshot.categories?.length || 0, products: snapshot.products?.length || 0 });
+      setAdminStatus('Menú sincronizado con Supabase. Fuente: Supabase.');
       await refreshProductImages();
       return snapshot;
     } catch (error) {
+      setDataSource('supabase-error');
+      console.warn('Admin products source:', 'supabase_error', error.message);
       setAdminStatus(error.message);
     }
   }
 
   useEffect(() => {
-    if (unlocked && isSupabaseConfigured) reloadAdminMenu();
+    if (unlocked && isSupabaseConfigured) {
+      reloadAdminMenu();
+      loadOrders();
+    }
   }, [unlocked]);
 
   async function persistProduct(category, product, method = 'PATCH') {
@@ -946,7 +1305,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   async function persistCategory(category, method = 'POST') {
     if (!isSupabaseConfigured) return;
     try {
-      const snapshot = await adminRequest('admin-categories', { method, pin, body: { category, id: category.supabaseCategoryId, slug: category.id, name: category.name } });
+      const snapshot = await adminRequest('admin-categories', { method, pin, body: { category, id: category.supabaseCategoryId, slug: category.id, name: category.name, sortOrder: category.sortOrder } });
       if (snapshot.categories) setMenu(menuFromAdminSnapshot(snapshot));
       setAdminStatus('Categoría guardada en Supabase.');
     } catch (error) {
@@ -1007,7 +1366,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const cleanName = String(name || '').trim();
     if (!cleanName) return '';
     const id = slugify(cleanName);
-    const category = createCategory(cleanName);
+    const category = { ...createCategory(cleanName), sortOrder: menu.length };
     setMenu((current) => categoryExists(current, cleanName) ? current : [...current, category]);
     persistCategory(category);
     return id;
@@ -1027,6 +1386,37 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     if (renamed) persistCategory(renamed, 'PATCH');
   }
 
+
+  async function moveCategory(categoryId, direction) {
+    const ordered = categoryOptions(menu);
+    const currentIndex = ordered.findIndex((category) => category.id === categoryId);
+    const targetIndex = currentIndex + direction;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= ordered.length) return;
+    const reordered = [...ordered];
+    [reordered[currentIndex], reordered[targetIndex]] = [reordered[targetIndex], reordered[currentIndex]];
+    const withSortOrder = reordered.map((category, index) => ({ ...category, sortOrder: index }));
+    setMenu((current) => normalizeMenu(withSortOrder.map((orderedCategory) => {
+      const existing = current.find((category) => category.id === orderedCategory.id || category.supabaseCategoryId === orderedCategory.supabaseCategoryId);
+      return existing ? { ...existing, sortOrder: orderedCategory.sortOrder } : orderedCategory;
+    })));
+    if (!isSupabaseConfigured) return;
+    try {
+      const snapshot = await adminRequest('admin-categories', {
+        method: 'PATCH',
+        pin,
+        body: {
+          action: 'reorder',
+          categories: withSortOrder.map((category) => ({ id: category.supabaseCategoryId, slug: category.id, sortOrder: category.sortOrder }))
+        }
+      });
+      setMenu(menuFromAdminSnapshot(snapshot));
+      setAdminStatus('Orden de categorías actualizado.');
+    } catch (error) {
+      setAdminStatus(error.message);
+      reloadAdminMenu();
+    }
+  }
+
   function deleteCategory(categoryId) {
     const category = menu.find((item) => item.id === categoryId);
     if (!category || category.items.length > 0) return alert('Solo puedes eliminar categorías sin productos asignados.');
@@ -1040,9 +1430,9 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const targetId = slugify(cleanName);
     const sourceCategoryNow = menu.find((category) => category.id === sourceCategoryId);
     const itemToPersist = sourceCategoryNow?.items.find((item) => item.id === itemId);
-    const targetCategoryNow = menu.find((category) => category.id === targetId || slugify(category.name) === targetId) || createCategory(cleanName);
+    const targetCategoryNow = menu.find((category) => category.id === targetId || slugify(category.name) === targetId) || { ...createCategory(cleanName), sortOrder: menu.length };
     setMenu((current) => {
-      const withCategory = categoryExists(current, cleanName) ? current : [...current, createCategory(cleanName)];
+      const withCategory = categoryExists(current, cleanName) ? current : [...current, { ...createCategory(cleanName), sortOrder: current.length }];
       const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
       const itemToMove = sourceCategory?.items.find((item) => item.id === itemId);
       if (!itemToMove) return withCategory;
@@ -1060,11 +1450,11 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const targetOption = adminCategories.find((category) => category.id === targetCategoryId);
     const sourceCategoryNow = menu.find((category) => category.id === sourceCategoryId);
     const itemToPersist = sourceCategoryNow?.items.find((item) => item.id === itemId);
-    const targetCategoryNow = menu.find((category) => category.id === targetCategoryId) || createCategory(targetOption?.name || targetCategoryId);
+    const targetCategoryNow = menu.find((category) => category.id === targetCategoryId) || { ...createCategory(targetOption?.name || targetCategoryId), sortOrder: menu.length };
     setMenu((current) => {
       const withCategory = current.some((category) => category.id === targetCategoryId)
         ? current
-        : [...current, createCategory(targetOption?.name || targetCategoryId)];
+        : [...current, { ...createCategory(targetOption?.name || targetCategoryId), sortOrder: current.length }];
       const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
       const itemToMove = sourceCategory?.items.find((item) => item.id === itemId);
       if (!itemToMove) return withCategory;
@@ -1132,7 +1522,10 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       id: slugify(newProduct.name),
       isSupabaseProduct: false,
       name: newProduct.name.trim(),
-      price: Number(newProduct.price) || 0,
+      cost: null,
+      price: parseOptionalNumber(newProduct.price),
+      discountPrice: null,
+      discountActive: false,
       description: newProduct.description.trim(),
       ingredients: splitCsv(newProduct.ingredients).map((name) => ({ name, removable: true })),
       images: [],
@@ -1142,7 +1535,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const targetName = newProduct.categoryName.trim();
     const selectedCategory = adminCategories.find((category) => category.id === newProduct.categoryId);
     const targetId = targetName ? slugify(targetName) : newProduct.categoryId;
-    const targetCategory = menu.find((category) => category.id === targetId) || createCategory(targetName || selectedCategory?.name || targetId);
+    const targetCategory = menu.find((category) => category.id === targetId) || { ...createCategory(targetName || selectedCategory?.name || targetId), sortOrder: menu.length };
     setMenu((current) => {
       const needsCategory = !current.some((category) => category.id === targetId);
       const withCategory = needsCategory ? [...current, targetCategory] : current;
@@ -1183,6 +1576,20 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
             <input type="password" value={pin} onChange={(event) => setPin(event.target.value)} placeholder="1234" />
           </label>
           <button onClick={login}>Entrar</button>
+          <div className="admin-update-summary">
+            <strong>Resumen de actualización</strong>
+            <ul>
+              <li>Productos cargan cost, ingredient_cost, packaging_cost y discount_price desde Supabase.</li>
+              <li>El campo Costo usa product.cost; 0 o null se muestran vacío.</li>
+              <li>El menú público usa precio efectivo: descuento activo válido menor que precio normal; si no, precio normal.</li>
+              <li>Cada producto se edita con estado aislado y se guarda con botón Guardar producto.</li>
+              <li>Ingredientes se agregan con input enfocado, Enter y persistencia al guardar.</li>
+              <li>Descuento activo se guarda explícitamente como discount_active boolean y se recarga desde Supabase.</li>
+              <li>Subida de imágenes usa JSON base64 en lugar de multipart, devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
+              <li>Las imágenes del menú público se pueden abrir en visor con zoom, teclado y navegación.</li>
+              <li>Teléfono/WhatsApp del negocio: 614 599 9748 / 526145999748.</li>
+            </ul>
+          </div>
           <p className="small-note">Ojo: este PIN no es seguridad real. Para producción hay que conectar Supabase, Firebase o un backend.</p>
         </div>
       </section>
@@ -1235,6 +1642,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           </label>
           <button type="button" className="button--ghost" onClick={() => persistSettings(business)}>Guardar configuración en Supabase</button>
           <p className="small-note">Fuente actual: {dataSource}. {adminStatus}</p>
+          {isSupabaseConfigured && dataSource !== 'supabase-admin' && <p className="small-note warning-note">Admin esperando datos reales de Supabase; no uses datos locales/cacheados para editar productos.</p>}
         </div>
       </div>
 
@@ -1249,6 +1657,50 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         <p className="small-note">Métricas locales del navegador. Para métricas reales usa Google Analytics, Plausible o backend.</p>
       </div>
 
+
+      <div className="panel admin-full">
+        <div className="admin-header">
+          <div>
+            <p className="eyebrow">Órdenes</p>
+            <h2>Órdenes recientes</h2>
+          </div>
+          <button type="button" className="button--ghost" onClick={loadOrders}>Actualizar órdenes</button>
+        </div>
+        <p className="small-note">{ordersStatus || 'Las órdenes se crean desde Stripe Checkout y se actualizan por webhook.'}</p>
+        <div className="orders-table-wrap">
+          <table className="orders-table">
+            <thead>
+              <tr>
+                <th>Orden</th>
+                <th>Cliente</th>
+                <th>Teléfono</th>
+                <th>Total</th>
+                <th>Pago</th>
+                <th>Estado pago</th>
+                <th>Estado orden</th>
+                <th>Fecha</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.length === 0 ? (
+                <tr><td colSpan="8">Sin órdenes todavía.</td></tr>
+              ) : orders.map((order) => (
+                <tr key={order.id}>
+                  <td>{order.order_number}</td>
+                  <td>{order.customer_name || 'Cliente'}</td>
+                  <td>{order.customer_phone || '—'}</td>
+                  <td>{formatMoney(order.total)}</td>
+                  <td>{paymentLabel(order.payment_method)}</td>
+                  <td>{order.payment_status}</td>
+                  <td>{order.order_status}</td>
+                  <td>{order.created_at ? new Date(order.created_at).toLocaleString('es-MX') : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div className="panel admin-full">
         <div className="admin-header">
           <div>
@@ -1257,10 +1709,14 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           </div>
         </div>
         <div className="category-admin-list">
-          {adminCategories.map((category) => (
+          {adminCategories.map((category, categoryIndex) => (
             <div key={category.id} className="category-admin-row">
+              <div className="category-order-actions">
+                <button type="button" className="button--ghost" onClick={() => moveCategory(category.id, -1)} disabled={categoryIndex === 0}>Subir</button>
+                <button type="button" className="button--ghost" onClick={() => moveCategory(category.id, 1)} disabled={categoryIndex === adminCategories.length - 1}>Bajar</button>
+              </div>
               <span>{category.name}</span>
-              <small>{category.items?.length || 0} productos</small>
+              <small>{category.items?.length || 0} productos · orden {Number(category.sortOrder ?? categoryIndex) + 1}</small>
               <input
                 placeholder="Renombrar categoría"
                 value={renameDrafts[category.id] ?? category.name}
@@ -1291,6 +1747,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           </div>
         </div>
 
+        <p className="small-note">Fuente de productos en admin: {dataSource === 'supabase-admin' ? 'Supabase' : dataSource}. Usa Recargar Supabase para limpiar caché local y volver a leer la base.</p>
+
         {jsonMode ? (
           <div className="json-editor">
             <textarea value={jsonDraft} onChange={(event) => setJsonDraft(event.target.value)} />
@@ -1317,80 +1775,18 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <div key={category.id} className="admin-category">
                 <h3>{category.name}</h3>
                 {category.items.map((item) => (
-                  <div key={item.id} className="admin-product-editor">
-                    <div className="admin-product-editor__grid">
-                      <label>
-                        Nombre
-                        <input value={item.name} onChange={(event) => updateItem(category.id, item.id, { name: event.target.value })} />
-                      </label>
-                      <label>
-                        Precio
-                        <input type="number" value={item.price || ''} placeholder="Precio" onChange={(event) => updateItem(category.id, item.id, { price: Number(event.target.value) || 0 })} />
-                      </label>
-                      <label>
-                        Categoría
-                        <select value={category.id} onChange={(event) => moveItem(category.id, item.id, event.target.value)}>
-                          {adminCategories.map((categoryOption) => <option key={categoryOption.id} value={categoryOption.id}>{categoryOption.name}</option>)}
-                        </select>
-                      </label>
-                      <label>
-                        Nueva categoría
-                        <div className="category-move-inline">
-                          <input
-                            value={moveDrafts[item.id] || ''}
-                            onChange={(event) => setMoveDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
-                            placeholder="Ej. Combos"
-                            list="category-options"
-                          />
-                          <button type="button" className="button--ghost" onClick={() => { moveItemToCategoryName(category.id, item.id, moveDrafts[item.id]); setMoveDrafts((current) => ({ ...current, [item.id]: '' })); }}>Mover</button>
-                        </div>
-                      </label>
-                      <div className="admin-image-slot">
-                        <ProductImageManager
-                          item={item}
-                          category={category}
-                          images={productImages[productImageKey(item)] || []}
-                          adminPin={pin}
-                          onSaveProduct={persistProduct}
-                          refreshProductImages={refreshProductImages}
-                          productImagesError={productImagesError}
-                        />
-                      </div>
-                    </div>
-
-                    <label>
-                      Descripción
-                      <textarea value={item.description || ''} onChange={(event) => updateItem(category.id, item.id, { description: event.target.value })} />
-                    </label>
-
-                    <div className="admin-ingredients">
-                      <div className="admin-subheader">
-                        <strong>Ingredientes</strong>
-                        <button type="button" className="button--ghost" onClick={() => addIngredient(category.id, item.id)}>Agregar ingrediente</button>
-                      </div>
-                      {normalizeIngredients(item.ingredients).length === 0 && <p className="small-note">Sin ingredientes capturados.</p>}
-                      {normalizeIngredients(item.ingredients).map((ingredient, ingredientIndex) => (
-                        <div key={`${item.id}-${ingredientIndex}`} className="ingredient-editor">
-                          <label>
-                            Ingrediente
-                            <input value={ingredient.name} onChange={(event) => updateIngredient(category.id, item.id, ingredientIndex, { name: event.target.value })} placeholder="huevo" />
-                          </label>
-                          <label className="checkbox-line">
-                            <input type="checkbox" checked={ingredient.removable} onChange={(event) => updateIngredient(category.id, item.id, ingredientIndex, { removable: event.target.checked })} />
-                            Cliente puede quitarlo
-                          </label>
-                          <button type="button" className="button--danger" onClick={() => deleteIngredient(category.id, item.id, ingredientIndex)}>Eliminar</button>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="admin-product-editor__actions">
-                      <button className={item.available ? 'status status--ok' : 'status status--off'} onClick={() => updateItem(category.id, item.id, { available: !item.available })}>
-                        {item.available ? 'Disponible' : 'Agotado'}
-                      </button>
-                      <button className="button--danger" onClick={() => deleteItem(category.id, item.id)}>Quitar producto</button>
-                    </div>
-                  </div>
+                  <AdminProductEditor
+                    key={productImageKey(item) || item.id}
+                    item={item}
+                    category={category}
+                    adminCategories={adminCategories}
+                    productImages={productImages}
+                    adminPin={pin}
+                    persistProduct={persistProduct}
+                    deleteItem={deleteItem}
+                    refreshProductImages={refreshProductImages}
+                    productImagesError={productImagesError}
+                  />
                 ))}
               </div>
             ))}
@@ -1401,6 +1797,219 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   );
 }
 
+
+
+function AdminProductEditor({ item, category, adminCategories, productImages, adminPin, persistProduct, deleteItem, refreshProductImages, productImagesError }) {
+  const [draft, setDraft] = useState(() => ({ ...item, categoryId: category.id, newIngredientName: '', newIngredientRemovable: true }));
+  const [saveStatus, setSaveStatus] = useState('');
+  const newIngredientRef = React.useRef(null);
+  const itemKey = productImageKey(item) || item.id;
+
+  useEffect(() => {
+    setDraft((current) => current?.id === item.id
+      ? { ...item, categoryId: current.categoryId || category.id, newIngredientName: current.newIngredientName || '', newIngredientRemovable: current.newIngredientRemovable ?? true }
+      : { ...item, categoryId: category.id, newIngredientName: '', newIngredientRemovable: true });
+  }, [item, category.id]);
+
+  function patchDraft(patch) {
+    setDraft((current) => ({ ...current, ...patch }));
+    setSaveStatus('Cambios sin guardar');
+  }
+
+  function patchIngredient(index, patch) {
+    setDraft((current) => ({
+      ...current,
+      ingredients: normalizeIngredients(current.ingredients).map((ingredient, ingredientIndex) => ingredientIndex === index ? { ...ingredient, ...patch } : ingredient)
+    }));
+    setSaveStatus('Cambios sin guardar');
+  }
+
+  function removeIngredient(index) {
+    setDraft((current) => ({
+      ...current,
+      ingredients: normalizeIngredients(current.ingredients).filter((_, ingredientIndex) => ingredientIndex !== index)
+    }));
+    setSaveStatus('Cambios sin guardar');
+  }
+
+  function addDraftIngredient() {
+    const name = String(draft.newIngredientName || '').trim();
+    if (!name) return;
+    setDraft((current) => ({
+      ...current,
+      ingredients: [...normalizeIngredients(current.ingredients), { name, removable: current.newIngredientRemovable !== false }],
+      newIngredientName: ''
+    }));
+    setSaveStatus('Cambios sin guardar');
+    window.setTimeout(() => newIngredientRef.current?.focus(), 0);
+  }
+
+  function openIngredientInput() {
+    setDraft((current) => ({ ...current, newIngredientName: current.newIngredientName || '', newIngredientRemovable: current.newIngredientRemovable ?? true }));
+    window.setTimeout(() => newIngredientRef.current?.focus(), 0);
+  }
+
+  async function saveProduct() {
+    const targetCategory = adminCategories.find((categoryOption) => categoryOption.id === draft.categoryId) || category;
+    const productToSave = {
+      ...draft,
+      discountActive: draft.discountActive === true,
+      discount_active: draft.discountActive === true,
+      discountPrice: parseOptionalNumber(draft.discountPrice),
+      discount_price: parseOptionalNumber(draft.discountPrice),
+      price: parseOptionalNumber(draft.price),
+      cost: parseOptionalNumber(draft.cost),
+      ingredients: normalizeIngredients(draft.ingredients)
+    };
+    console.log('Guardando descuento', productToSave.name, {
+      price: productToSave.price,
+      discount_price: productToSave.discount_price,
+      discount_active: productToSave.discount_active
+    });
+    setSaveStatus('Guardando...');
+    try {
+      await persistProduct(targetCategory, productToSave, 'PATCH');
+      setSaveStatus('Guardado');
+    } catch (error) {
+      setSaveStatus(error.message || 'Error al guardar producto.');
+    }
+  }
+
+  return (
+    <div className="admin-product-editor">
+      <div className="admin-product-editor__grid">
+        <label>
+          Nombre
+          <input value={draft.name || ''} onChange={(event) => patchDraft({ name: event.target.value })} />
+        </label>
+        <label>
+          Costo
+          <input type="number" step="0.01" value={adminNumberInputValue(draft.cost)} placeholder="Costo total interno" onChange={(event) => patchDraft({ cost: parseOptionalNumber(event.target.value) })} />
+        </label>
+        <label>
+          Precio normal
+          <input type="number" step="0.01" value={draft.price ?? ''} placeholder="Precio normal" onChange={(event) => patchDraft({ price: parseOptionalNumber(event.target.value) })} />
+        </label>
+        <label>
+          Precio con descuento
+          <input type="number" step="0.01" value={draft.discountPrice ?? ''} placeholder="Precio descuento" onChange={(event) => patchDraft({ discountPrice: parseOptionalNumber(event.target.value) })} />
+        </label>
+        <label className="checkbox-line admin-discount-toggle">
+          <input type="checkbox" checked={isDiscountActive(draft)} onChange={(event) => patchDraft({ discountActive: event.target.checked, discount_active: event.target.checked })} />
+          Descuento activo
+        </label>
+        <label>
+          Categoría
+          <select value={draft.categoryId || category.id} onChange={(event) => patchDraft({ categoryId: event.target.value })}>
+            {adminCategories.map((categoryOption) => <option key={categoryOption.id} value={categoryOption.id}>{categoryOption.name}</option>)}
+          </select>
+        </label>
+        <div className="admin-image-slot">
+          <ProductImageManager
+            item={draft}
+            category={category}
+            images={productImages[itemKey] || []}
+            adminPin={adminPin}
+            onSaveProduct={persistProduct}
+            refreshProductImages={refreshProductImages}
+            productImagesError={productImagesError}
+          />
+        </div>
+      </div>
+
+      <ProductProfitSummary item={draft} />
+
+      <label>
+        Descripción
+        <textarea value={draft.description || ''} onChange={(event) => patchDraft({ description: event.target.value })} />
+      </label>
+
+      <div className="admin-ingredients">
+        <div className="admin-subheader">
+          <strong>Ingredientes</strong>
+          <button type="button" className="button--ghost" onClick={openIngredientInput}>Agregar ingrediente</button>
+        </div>
+        {normalizeIngredients(draft.ingredients).length === 0 && <p className="small-note">Sin ingredientes capturados.</p>}
+        {normalizeIngredients(draft.ingredients).map((ingredient, ingredientIndex) => (
+          <div key={`${draft.id}-${ingredientIndex}-${ingredient.name}`} className="ingredient-editor">
+            <label>
+              Ingrediente
+              <input value={ingredient.name} onChange={(event) => patchIngredient(ingredientIndex, { name: event.target.value })} placeholder="huevo" />
+            </label>
+            <label className="checkbox-line">
+              <input type="checkbox" checked={ingredient.removable} onChange={(event) => patchIngredient(ingredientIndex, { removable: event.target.checked })} />
+              Cliente puede quitarlo
+            </label>
+            <button type="button" className="button--danger" onClick={() => removeIngredient(ingredientIndex)}>Eliminar</button>
+          </div>
+        ))}
+        <div className="ingredient-editor ingredient-editor--new">
+          <label>
+            Nuevo ingrediente
+            <input
+              ref={newIngredientRef}
+              value={draft.newIngredientName || ''}
+              onChange={(event) => patchDraft({ newIngredientName: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  addDraftIngredient();
+                }
+              }}
+              placeholder="Escribe ingrediente y Enter"
+            />
+          </label>
+          <label className="checkbox-line">
+            <input type="checkbox" checked={draft.newIngredientRemovable !== false} onChange={(event) => patchDraft({ newIngredientRemovable: event.target.checked })} />
+            Cliente puede quitarlo
+          </label>
+          <button type="button" className="button--ghost" onClick={addDraftIngredient}>Agregar</button>
+        </div>
+      </div>
+
+      <div className="admin-product-editor__actions">
+        <button className={draft.available !== false ? 'status status--ok' : 'status status--off'} onClick={() => patchDraft({ available: draft.available === false })}>
+          {draft.available !== false ? 'Disponible' : 'Agotado'}
+        </button>
+        <button type="button" onClick={saveProduct} disabled={saveStatus === 'Guardando...'}>{saveStatus === 'Guardando...' ? 'Guardando...' : 'Guardar producto'}</button>
+        <button className="button--danger" onClick={() => deleteItem(category.id, item.id)}>Quitar producto</button>
+        {saveStatus && <span className="small-note">{saveStatus}</span>}
+      </div>
+    </div>
+  );
+}
+
+function ProductProfitSummary({ item }) {
+  const metrics = productProfitMetrics(item);
+  return (
+    <div className="profit-summary">
+      <div><span>Utilidad normal</span><strong>{metrics.normalProfit === null ? '—' : formatMoney(metrics.normalProfit)}</strong></div>
+      <div><span>Margen normal</span><strong>{formatPercent(metrics.normalMargin)}</strong></div>
+      <div><span>Utilidad con descuento</span><strong>{metrics.discountProfit === null ? '—' : formatMoney(metrics.discountProfit)}</strong></div>
+      <div><span>Margen con descuento</span><strong>{formatPercent(metrics.discountMargin)}</strong></div>
+    </div>
+  );
+}
+
+
+async function parseFunctionResponse(response, fallbackMessage) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { ok: false, error: text || fallbackMessage };
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || '').replace(/^data:[^;]+;base64,/, ''));
+    reader.onerror = () => reject(new Error('No se pudo leer la imagen seleccionada.'));
+    reader.readAsDataURL(file);
+  });
+}
 
 function ProductImageManager({ item, category, images, adminPin, onSaveProduct, refreshProductImages, productImagesError }) {
   const [uploading, setUploading] = useState(false);
@@ -1426,23 +2035,29 @@ function ProductImageManager({ item, category, images, adminPin, onSaveProduct, 
     setMessage('');
     try {
       for (const [fileIndex, file] of files.entries()) {
-        const formData = new FormData();
-        formData.append('adminPin', adminPin);
-        formData.append('productId', productId);
-        formData.append('category', category.id);
-        formData.append('name', item.name || 'Producto');
-        formData.append('description', item.description || '');
-        formData.append('price', String(item.price || ''));
-        formData.append('available', String(item.available !== false));
-        formData.append('sortOrder', String(images.length + fileIndex));
-        formData.append('image', file);
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+          throw new Error(`${file.name}: solo se aceptan imágenes jpeg, png o webp.`);
+        }
+        if (file.size > 2 * 1024 * 1024) {
+          throw new Error(`${file.name}: la imagen excede 2 MB.`);
+        }
 
+        setMessage(`Subiendo ${file.name}...`);
+        const base64 = await fileToBase64(file);
         const response = await fetch('/.netlify/functions/upload-product-image', {
           method: 'POST',
-          body: formData
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            adminPin,
+            productId,
+            fileName: file.name,
+            mimeType: file.type,
+            base64,
+            sortOrder: images.length + fileIndex
+          })
         });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || 'No se pudo subir la imagen.');
+        const result = await parseFunctionResponse(response, 'No se pudo subir la imagen.');
+        if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo subir la imagen.');
       }
       await refreshProductImages();
       setMessage('Imagen subida a Supabase.');
@@ -1481,8 +2096,8 @@ function ProductImageManager({ item, category, images, adminPin, onSaveProduct, 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminPin, id: image.id, storage_path: image.storage_path })
       });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'No se pudo eliminar la imagen.');
+      const result = await parseFunctionResponse(response, 'No se pudo eliminar la imagen.');
+      if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo eliminar la imagen.');
       await refreshProductImages();
       setMessage(result.warning || 'Imagen eliminada.');
     } catch (error) {
@@ -1552,6 +2167,7 @@ function Footer({ business }) {
       <strong>{business.name}</strong>
       <span>{business.subtitle}</span>
       <span>{business.address}</span>
+      <a href={`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(WHATSAPP_GREETING)}`}>Tel. {BUSINESS_PHONE_DISPLAY}</a>
     </footer>
   );
 }

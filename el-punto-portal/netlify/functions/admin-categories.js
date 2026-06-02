@@ -13,10 +13,22 @@ export async function handler(event) {
       return json(200, { category });
     }
     if (event.httpMethod === 'PATCH') {
+      if (body.action === 'reorder') {
+        const categories = Array.isArray(body.categories) ? body.categories : [];
+        for (const category of categories) {
+          const sortOrder = Number(category.sortOrder ?? category.sort_order);
+          if (!Number.isFinite(sortOrder)) continue;
+          const query = supabase.from('categories').update({ sort_order: sortOrder, updated_at: new Date().toISOString() });
+          const { error } = category.id ? await query.eq('id', category.id) : await query.eq('slug', category.slug);
+          if (error) throw new Error(error.message);
+        }
+        return json(200, await menuSnapshot(supabase));
+      }
       if (!body.id && !body.slug) return json(400, { error: 'Falta id o slug de categoría.' });
       const patch = {
         ...(body.name ? { name: String(body.name).trim(), slug: body.slug || slugify(body.name) } : {}),
         ...(typeof body.active === 'boolean' ? { active: body.active } : {}),
+        ...(body.sortOrder !== undefined || body.sort_order !== undefined ? { sort_order: Number(body.sortOrder ?? body.sort_order) } : {}),
         updated_at: new Date().toISOString()
       };
       const query = supabase.from('categories').update(patch).select('id, name, slug, sort_order, active');
