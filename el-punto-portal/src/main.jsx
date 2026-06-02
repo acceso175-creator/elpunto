@@ -116,12 +116,12 @@ function categoryExists(menu, name) {
 
 function categoryOptions(menu) {
   const byId = new Map();
-  BASE_CATEGORY_NAMES.forEach((name) => {
+  BASE_CATEGORY_NAMES.forEach((name, index) => {
     const category = menu.find((item) => slugify(item.name) === slugify(name) || item.id === slugify(name));
-    byId.set(slugify(name), category || createCategory(name));
+    byId.set(slugify(name), category || { ...createCategory(name), sortOrder: index });
   });
-  menu.forEach((category) => byId.set(category.id || slugify(category.name), category));
-  return [...byId.values()];
+  menu.forEach((category, index) => byId.set(category.id || slugify(category.name), { ...category, sortOrder: Number(category.sortOrder ?? category.sort_order ?? index) }));
+  return [...byId.values()].sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0) || String(a.name).localeCompare(String(b.name)));
 }
 
 function normalizeIngredients(ingredients) {
@@ -141,19 +141,23 @@ function normalizeIngredients(ingredients) {
 
 function normalizeMenu(menu) {
   if (!Array.isArray(menu)) return normalizeMenu(initialMenu);
-  return menu.map((category) => ({
+  return menu.map((category, categoryIndex) => ({
     ...category,
     id: category.id || slugify(category.name),
     name: category.name || 'Categoría',
     description: category.description || categoryDescription(category.name),
+    sortOrder: Number(category.sortOrder ?? category.sort_order ?? categoryIndex),
     items: (category.items || []).map((item) => ({
       ...item,
+      cost: item.cost ?? null,
+      discountPrice: item.discountPrice ?? item.discount_price ?? null,
+      discountActive: item.discountActive ?? item.discount_active ?? false,
       isSupabaseProduct: item.isSupabaseProduct === true,
       supabaseProductId: item.isSupabaseProduct === true && isUuid(item.supabaseProductId || item.id) ? (item.supabaseProductId || item.id) : undefined,
       images: Array.isArray(item.images) ? item.images.filter((image) => typeof image === 'string' && !image.startsWith('data:')) : [],
       ingredients: normalizeIngredients(item.ingredients)
     }))
-  }));
+  })).sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0) || String(a.name).localeCompare(String(b.name)));
 }
 
 function removableIngredientNames(ingredients) {
@@ -173,22 +177,60 @@ function usePersistedState(key, fallback, normalize = identity) {
 }
 
 function formatMoney(value) {
-  if (!value) return 'Precio por confirmar';
-  return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value);
+  if (value === null || value === undefined || value === '' || Number.isNaN(Number(value))) return 'Precio por confirmar';
+  return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(Number(value));
+}
+
+function numericValue(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function itemBasePrice(item) {
+  return numericValue(item?.price ?? item?.unitPrice ?? item?.unit_price);
+}
+
+function itemDiscountPrice(item) {
+  return numericValue(item?.discountPrice ?? item?.discount_price);
+}
+
+function hasActiveDiscount(item) {
+  return (item?.discountActive === true || item?.discount_active === true) && itemDiscountPrice(item) !== null;
 }
 
 function itemNumericPrice(item) {
-  const candidates = [item?.price, item?.unitPrice, item?.unit_price];
-  for (const value of candidates) {
-    if (value === null || value === undefined || value === '') continue;
-    const price = Number(value);
-    if (Number.isFinite(price) && price > 0) return price;
-  }
-  return null;
+  if (hasActiveDiscount(item)) return itemDiscountPrice(item);
+  return itemBasePrice(item);
 }
 
 function hasNumericPrice(item) {
   return itemNumericPrice(item) !== null;
+}
+
+function parseOptionalNumber(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatPercent(value) {
+  if (!Number.isFinite(value)) return '—';
+  return `${value.toFixed(1)}%`;
+}
+
+function productProfitMetrics(item) {
+  const rawCost = item?.cost;
+  const costNumber = rawCost === null || rawCost === undefined || rawCost === '' ? null : Number(rawCost);
+  const cost = Number.isFinite(costNumber) && costNumber >= 0 ? costNumber : null;
+  const price = itemBasePrice(item);
+  const discount = itemDiscountPrice(item);
+  return {
+    normalProfit: cost !== null && price !== null ? price - cost : null,
+    discountProfit: cost !== null && discount !== null ? discount - cost : null,
+    normalMargin: cost !== null && price !== null ? ((price - cost) / price) * 100 : null,
+    discountMargin: cost !== null && discount !== null ? ((discount - cost) / discount) * 100 : null
+  };
 }
 
 function cartItemsMissingPrice(cart) {
@@ -606,6 +648,10 @@ function ProductCard({ item, categoryId, addToCart, images }) {
     if (imageIndex >= imageUrls.length) setImageIndex(0);
   }, [imageIndex, imageUrls.length]);
 
+  const basePrice = itemBasePrice(item);
+  const discountPrice = itemDiscountPrice(item);
+  const showDiscount = hasActiveDiscount(item);
+
   function toggleIngredient(ingredient) {
     setRemoved((current) => current.includes(ingredient)
       ? current.filter((value) => value !== ingredient)
@@ -621,6 +667,9 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       name: item.name,
       price: item.price,
       priceLabel: item.priceLabel,
+      discountPrice: item.discountPrice,
+      discountActive: item.discountActive,
+      effectivePrice: itemNumericPrice(item),
       quantity,
       removedIngredients: removed,
       selectedOptions,
@@ -653,7 +702,21 @@ function ProductCard({ item, categoryId, addToCart, images }) {
         </div>
         {item.badge && <span className="badge">{item.badge}</span>}
       </div>
-      <strong className="price">{item.price ? formatMoney(item.price) : (item.priceLabel || 'Precio por confirmar')}</strong>
+      {basePrice ? (
+        <div className={showDiscount ? 'price-stack' : 'price'}>
+          {showDiscount ? (
+            <>
+              <span className="price-old">{formatMoney(basePrice)}</span>
+              <strong className="price-discount">{formatMoney(discountPrice)}</strong>
+              <span className="badge promo-badge">Promo</span>
+            </>
+          ) : (
+            <strong>{formatMoney(basePrice)}</strong>
+          )}
+        </div>
+      ) : (
+        <strong className="price">{item.priceLabel || 'Precio por confirmar'}</strong>
+      )}
 
       {optionList.length > 0 && (
         <div className="modifiers">
@@ -1093,7 +1156,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   async function persistCategory(category, method = 'POST') {
     if (!isSupabaseConfigured) return;
     try {
-      const snapshot = await adminRequest('admin-categories', { method, pin, body: { category, id: category.supabaseCategoryId, slug: category.id, name: category.name } });
+      const snapshot = await adminRequest('admin-categories', { method, pin, body: { category, id: category.supabaseCategoryId, slug: category.id, name: category.name, sortOrder: category.sortOrder } });
       if (snapshot.categories) setMenu(menuFromAdminSnapshot(snapshot));
       setAdminStatus('Categoría guardada en Supabase.');
     } catch (error) {
@@ -1154,7 +1217,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const cleanName = String(name || '').trim();
     if (!cleanName) return '';
     const id = slugify(cleanName);
-    const category = createCategory(cleanName);
+    const category = { ...createCategory(cleanName), sortOrder: menu.length };
     setMenu((current) => categoryExists(current, cleanName) ? current : [...current, category]);
     persistCategory(category);
     return id;
@@ -1174,6 +1237,37 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     if (renamed) persistCategory(renamed, 'PATCH');
   }
 
+
+  async function moveCategory(categoryId, direction) {
+    const ordered = categoryOptions(menu);
+    const currentIndex = ordered.findIndex((category) => category.id === categoryId);
+    const targetIndex = currentIndex + direction;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= ordered.length) return;
+    const reordered = [...ordered];
+    [reordered[currentIndex], reordered[targetIndex]] = [reordered[targetIndex], reordered[currentIndex]];
+    const withSortOrder = reordered.map((category, index) => ({ ...category, sortOrder: index }));
+    setMenu((current) => normalizeMenu(withSortOrder.map((orderedCategory) => {
+      const existing = current.find((category) => category.id === orderedCategory.id || category.supabaseCategoryId === orderedCategory.supabaseCategoryId);
+      return existing ? { ...existing, sortOrder: orderedCategory.sortOrder } : orderedCategory;
+    })));
+    if (!isSupabaseConfigured) return;
+    try {
+      const snapshot = await adminRequest('admin-categories', {
+        method: 'PATCH',
+        pin,
+        body: {
+          action: 'reorder',
+          categories: withSortOrder.map((category) => ({ id: category.supabaseCategoryId, slug: category.id, sortOrder: category.sortOrder }))
+        }
+      });
+      setMenu(menuFromAdminSnapshot(snapshot));
+      setAdminStatus('Orden de categorías actualizado.');
+    } catch (error) {
+      setAdminStatus(error.message);
+      reloadAdminMenu();
+    }
+  }
+
   function deleteCategory(categoryId) {
     const category = menu.find((item) => item.id === categoryId);
     if (!category || category.items.length > 0) return alert('Solo puedes eliminar categorías sin productos asignados.');
@@ -1187,9 +1281,9 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const targetId = slugify(cleanName);
     const sourceCategoryNow = menu.find((category) => category.id === sourceCategoryId);
     const itemToPersist = sourceCategoryNow?.items.find((item) => item.id === itemId);
-    const targetCategoryNow = menu.find((category) => category.id === targetId || slugify(category.name) === targetId) || createCategory(cleanName);
+    const targetCategoryNow = menu.find((category) => category.id === targetId || slugify(category.name) === targetId) || { ...createCategory(cleanName), sortOrder: menu.length };
     setMenu((current) => {
-      const withCategory = categoryExists(current, cleanName) ? current : [...current, createCategory(cleanName)];
+      const withCategory = categoryExists(current, cleanName) ? current : [...current, { ...createCategory(cleanName), sortOrder: current.length }];
       const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
       const itemToMove = sourceCategory?.items.find((item) => item.id === itemId);
       if (!itemToMove) return withCategory;
@@ -1207,11 +1301,11 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const targetOption = adminCategories.find((category) => category.id === targetCategoryId);
     const sourceCategoryNow = menu.find((category) => category.id === sourceCategoryId);
     const itemToPersist = sourceCategoryNow?.items.find((item) => item.id === itemId);
-    const targetCategoryNow = menu.find((category) => category.id === targetCategoryId) || createCategory(targetOption?.name || targetCategoryId);
+    const targetCategoryNow = menu.find((category) => category.id === targetCategoryId) || { ...createCategory(targetOption?.name || targetCategoryId), sortOrder: menu.length };
     setMenu((current) => {
       const withCategory = current.some((category) => category.id === targetCategoryId)
         ? current
-        : [...current, createCategory(targetOption?.name || targetCategoryId)];
+        : [...current, { ...createCategory(targetOption?.name || targetCategoryId), sortOrder: current.length }];
       const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
       const itemToMove = sourceCategory?.items.find((item) => item.id === itemId);
       if (!itemToMove) return withCategory;
@@ -1279,7 +1373,10 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       id: slugify(newProduct.name),
       isSupabaseProduct: false,
       name: newProduct.name.trim(),
-      price: Number(newProduct.price) || 0,
+      cost: null,
+      price: parseOptionalNumber(newProduct.price),
+      discountPrice: null,
+      discountActive: false,
       description: newProduct.description.trim(),
       ingredients: splitCsv(newProduct.ingredients).map((name) => ({ name, removable: true })),
       images: [],
@@ -1289,7 +1386,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const targetName = newProduct.categoryName.trim();
     const selectedCategory = adminCategories.find((category) => category.id === newProduct.categoryId);
     const targetId = targetName ? slugify(targetName) : newProduct.categoryId;
-    const targetCategory = menu.find((category) => category.id === targetId) || createCategory(targetName || selectedCategory?.name || targetId);
+    const targetCategory = menu.find((category) => category.id === targetId) || { ...createCategory(targetName || selectedCategory?.name || targetId), sortOrder: menu.length };
     setMenu((current) => {
       const needsCategory = !current.some((category) => category.id === targetId);
       const withCategory = needsCategory ? [...current, targetCategory] : current;
@@ -1448,10 +1545,14 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           </div>
         </div>
         <div className="category-admin-list">
-          {adminCategories.map((category) => (
+          {adminCategories.map((category, categoryIndex) => (
             <div key={category.id} className="category-admin-row">
+              <div className="category-order-actions">
+                <button type="button" className="button--ghost" onClick={() => moveCategory(category.id, -1)} disabled={categoryIndex === 0}>Subir</button>
+                <button type="button" className="button--ghost" onClick={() => moveCategory(category.id, 1)} disabled={categoryIndex === adminCategories.length - 1}>Bajar</button>
+              </div>
               <span>{category.name}</span>
-              <small>{category.items?.length || 0} productos</small>
+              <small>{category.items?.length || 0} productos · orden {Number(category.sortOrder ?? categoryIndex) + 1}</small>
               <input
                 placeholder="Renombrar categoría"
                 value={renameDrafts[category.id] ?? category.name}
@@ -1515,8 +1616,20 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
                         <input value={item.name} onChange={(event) => updateItem(category.id, item.id, { name: event.target.value })} />
                       </label>
                       <label>
-                        Precio
-                        <input type="number" value={item.price || ''} placeholder="Precio" onChange={(event) => updateItem(category.id, item.id, { price: Number(event.target.value) || 0 })} />
+                        Costo
+                        <input type="number" value={item.cost ?? ''} placeholder="Costo interno" onChange={(event) => updateItem(category.id, item.id, { cost: parseOptionalNumber(event.target.value) })} />
+                      </label>
+                      <label>
+                        Precio normal
+                        <input type="number" value={item.price ?? ''} placeholder="Precio normal" onChange={(event) => updateItem(category.id, item.id, { price: parseOptionalNumber(event.target.value) })} />
+                      </label>
+                      <label>
+                        Precio con descuento
+                        <input type="number" value={item.discountPrice ?? ''} placeholder="Precio descuento" onChange={(event) => updateItem(category.id, item.id, { discountPrice: parseOptionalNumber(event.target.value) })} />
+                      </label>
+                      <label className="checkbox-line admin-discount-toggle">
+                        <input type="checkbox" checked={item.discountActive === true} onChange={(event) => updateItem(category.id, item.id, { discountActive: event.target.checked })} />
+                        Descuento activo
                       </label>
                       <label>
                         Categoría
@@ -1548,6 +1661,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
                         />
                       </div>
                     </div>
+
+                    <ProductProfitSummary item={item} />
 
                     <label>
                       Descripción
@@ -1592,6 +1707,19 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   );
 }
 
+
+
+function ProductProfitSummary({ item }) {
+  const metrics = productProfitMetrics(item);
+  return (
+    <div className="profit-summary">
+      <div><span>Utilidad normal</span><strong>{metrics.normalProfit === null ? '—' : formatMoney(metrics.normalProfit)}</strong></div>
+      <div><span>Margen normal</span><strong>{formatPercent(metrics.normalMargin)}</strong></div>
+      <div><span>Utilidad con descuento</span><strong>{metrics.discountProfit === null ? '—' : formatMoney(metrics.discountProfit)}</strong></div>
+      <div><span>Margen con descuento</span><strong>{formatPercent(metrics.discountMargin)}</strong></div>
+    </div>
+  );
+}
 
 function ProductImageManager({ item, category, images, adminPin, onSaveProduct, refreshProductImages, productImagesError }) {
   const [uploading, setUploading] = useState(false);

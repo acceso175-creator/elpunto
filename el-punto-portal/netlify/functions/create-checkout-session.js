@@ -4,9 +4,20 @@ import { getSupabaseAdmin, json, parseBody } from './_supabaseAdmin.js';
 const PRICE_CONFIRMATION_ERROR = 'Este pedido requiere confirmación de precio por WhatsApp antes de pagar.';
 const currency = 'mxn';
 
-function isNumericPrice(value) {
+function numericPrice(value) {
+  if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
-  return Number.isFinite(number) && number > 0;
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function isNumericPrice(value) {
+  return numericPrice(value) !== null;
+}
+
+function effectiveProductPrice(product) {
+  const discountPrice = numericPrice(product.discount_price);
+  if (product.discount_active === true && discountPrice !== null) return discountPrice;
+  return numericPrice(product.price);
 }
 
 function optionExtra(selectedOptions = {}) {
@@ -39,7 +50,7 @@ function cleanCartItem(item) {
 async function loadProducts(supabase, productIds) {
   const { data, error } = await supabase
     .from('products')
-    .select('id, name, price, price_label, available')
+    .select('id, name, price, cost, discount_price, discount_active, price_label, available')
     .in('id', productIds);
   if (error) throw new Error(error.message);
   return new Map((data || []).map((product) => [product.id, product]));
@@ -77,16 +88,24 @@ export async function handler(event) {
       if (!product || product.available === false) {
         throw new Error('Uno o más productos ya no están disponibles. Actualiza tu carrito e intenta de nuevo.');
       }
-      if (!isNumericPrice(product.price)) {
+      const effectivePrice = effectiveProductPrice(product);
+      if (!isNumericPrice(effectivePrice)) {
         throw new Error(PRICE_CONFIRMATION_ERROR);
       }
-      const unitPrice = Number(product.price) + optionExtra(item.selectedOptions);
+      const unitPrice = effectivePrice + optionExtra(item.selectedOptions);
       const lineTotal = unitPrice * item.quantity;
+      const rawCost = product.cost === null || product.cost === undefined || product.cost === '' ? null : Number(product.cost);
+      const cost = Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null;
       return {
         product_id: product.id,
         product_name: product.name,
         quantity: item.quantity,
         unit_price: unitPrice,
+        original_price: numericPrice(product.price),
+        discount_price: product.discount_active === true ? numericPrice(product.discount_price) : null,
+        effective_price: effectivePrice,
+        cost,
+        line_profit: cost !== null ? (unitPrice - cost) * item.quantity : null,
         line_total: lineTotal,
         selected_options: item.selectedOptions,
         removed_ingredients: item.removedIngredients,

@@ -11,14 +11,25 @@ function normalizeProductOptions(options) {
   return {};
 }
 
+function optionalNumber(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function cleanProductPayload(product, categoryId) {
-  const priceNumber = product.price === '' || product.price === null || product.price === undefined ? null : Number(product.price);
+  const priceNumber = optionalNumber(product.price);
+  const costNumber = optionalNumber(product.cost);
+  const discountPriceNumber = optionalNumber(product.discountPrice ?? product.discount_price);
   return {
     ...(product.supabaseProductId || product.id?.length === 36 ? { id: product.supabaseProductId || product.id } : {}),
     category_id: categoryId,
     name: String(product.name || '').trim(),
     description: product.description || '',
     price: Number.isFinite(priceNumber) ? priceNumber : null,
+    cost: Number.isFinite(costNumber) ? costNumber : null,
+    discount_price: Number.isFinite(discountPriceNumber) ? discountPriceNumber : null,
+    discount_active: product.discountActive === true || product.discount_active === true,
     price_label: product.priceLabel || product.price_label || 'Precio por confirmar',
     available: product.available !== false,
     favorite: product.favorite === true,
@@ -57,8 +68,8 @@ async function findExistingProduct(supabase, name, categoryId) {
 async function writeProduct(supabase, payload, includeOptions = true) {
   const writePayload = includeOptions ? payload : Object.fromEntries(Object.entries(payload).filter(([key]) => key !== 'options'));
   const fields = includeOptions
-    ? 'id, category_id, name, description, price, price_label, available, favorite, badge, sort_order, options'
-    : 'id, category_id, name, description, price, price_label, available, favorite, badge, sort_order';
+    ? 'id, category_id, name, description, price, cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, options'
+    : 'id, category_id, name, description, price, cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order';
   return supabase
     .from('products')
     .upsert(writePayload, { onConflict: 'id' })

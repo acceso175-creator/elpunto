@@ -199,3 +199,29 @@ Notas de seguridad:
 - `netlify/functions/create-checkout-session.js`
 - `netlify/functions/stripe-webhook.js`
 - `netlify/functions/admin-orders.js`
+
+## Costos, descuentos y reordenar categorías
+
+Para habilitar costos internos, precio con descuento y utilidad, ejecuta también:
+
+```txt
+1. Ejecuta supabase/schema.sql si todavía no existe el esquema base.
+2. Ejecuta supabase/orders.sql si todavía no existen las tablas de órdenes.
+3. Copia y ejecuta el contenido completo de supabase/pricing.sql en el SQL Editor de Supabase.
+```
+
+### Reordenar categorías
+
+1. Entra a `/admin`.
+2. Abre **Categorías del menú**.
+3. Usa **Subir** o **Bajar** en cada categoría.
+4. El cambio actualiza `categories.sort_order` en Supabase y el menú público respeta ese orden en filtros y secciones.
+
+### Utilidad y precio efectivo
+
+- Utilidad normal = `price - cost`.
+- Margen normal = `(price - cost) / price * 100`.
+- Utilidad con descuento = `discount_price - cost`.
+- Margen con descuento = `(discount_price - cost) / discount_price * 100`.
+- Precio efectivo para carrito, WhatsApp y Stripe = `discount_price` cuando `discount_active = true` y `discount_price` es numérico válido; en caso contrario usa `price`.
+- El costo y la utilidad solo se muestran en Admin, nunca al cliente.

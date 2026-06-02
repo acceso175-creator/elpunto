@@ -68,7 +68,8 @@ function normalizeBusinessSettings(row) {
 
 function productFromRow(row, category, index = 0) {
   const categorySlug = category?.slug || slugify(category?.name || row.category || 'menu');
-  const price = row.price === null || row.price === undefined ? 0 : Number(row.price);
+  const price = row.price === null || row.price === undefined ? null : Number(row.price);
+  const discountPrice = row.discount_price === null || row.discount_price === undefined ? null : Number(row.discount_price);
   return {
     id: row.id,
     supabaseProductId: row.id,
@@ -77,7 +78,10 @@ function productFromRow(row, category, index = 0) {
     description: row.description || '',
     category: category?.name || row.category_name || '',
     categorySlug,
+    cost: row.cost === null || row.cost === undefined ? null : Number(row.cost),
     price,
+    discountPrice,
+    discountActive: row.discount_active === true,
     priceLabel: row.price_label || (price ? undefined : 'Precio por confirmar'),
     available: row.available !== false,
     favorite: row.favorite === true,
@@ -107,7 +111,7 @@ function menuFromRows(categories, products) {
       .filter((product) => product.category_id === category.id)
       .map((product, index) => productFromRow(product, category, index))
       .sort((a, b) => a.sortOrder - b.sortOrder)
-  }));
+  })).sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || String(a.name).localeCompare(String(b.name)));
 }
 
 export function normalizeMenuData(categories, products) {
@@ -136,7 +140,7 @@ export async function getProducts() {
   }
   const { data, error } = await supabase
     .from('products')
-    .select('id, category_id, name, description, price, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)')
+    .select('id, category_id, name, description, price, cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)')
     .eq('available', true)
     .order('sort_order', { ascending: true });
   if (error) throw new Error(error.message);
