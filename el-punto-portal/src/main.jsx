@@ -1571,7 +1571,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <li>Cada producto se edita con estado aislado y se guarda con botón Guardar producto.</li>
               <li>Ingredientes se agregan con input enfocado, Enter y persistencia al guardar.</li>
               <li>Descuento activo se guarda explícitamente como discount_active boolean y se recarga desde Supabase.</li>
-              <li>Subida de imágenes usa parser multipart propio, devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
+              <li>Subida de imágenes usa JSON base64 en lugar de multipart, devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
               <li>Las imágenes del menú público se pueden abrir en visor con zoom, teclado y navegación.</li>
               <li>Teléfono/WhatsApp del negocio: 614 608 7217 / 526146087217.</li>
             </ul>
@@ -1988,6 +1988,15 @@ async function parseFunctionResponse(response, fallbackMessage) {
   }
 }
 
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || '').replace(/^data:[^;]+;base64,/, ''));
+    reader.onerror = () => reject(new Error('No se pudo leer la imagen seleccionada.'));
+    reader.readAsDataURL(file);
+  });
+}
+
 function ProductImageManager({ item, category, images, adminPin, onSaveProduct, refreshProductImages, productImagesError }) {
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
@@ -2012,20 +2021,26 @@ function ProductImageManager({ item, category, images, adminPin, onSaveProduct, 
     setMessage('');
     try {
       for (const [fileIndex, file] of files.entries()) {
-        const formData = new FormData();
-        formData.append('adminPin', adminPin);
-        formData.append('productId', productId);
-        formData.append('category', category.id);
-        formData.append('name', item.name || 'Producto');
-        formData.append('description', item.description || '');
-        formData.append('price', String(item.price || ''));
-        formData.append('available', String(item.available !== false));
-        formData.append('sortOrder', String(images.length + fileIndex));
-        formData.append('image', file);
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+          throw new Error(`${file.name}: solo se aceptan imágenes jpeg, png o webp.`);
+        }
+        if (file.size > 2 * 1024 * 1024) {
+          throw new Error(`${file.name}: la imagen excede 2 MB.`);
+        }
 
+        setMessage(`Subiendo ${file.name}...`);
+        const base64 = await fileToBase64(file);
         const response = await fetch('/.netlify/functions/upload-product-image', {
           method: 'POST',
-          body: formData
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            adminPin,
+            productId,
+            fileName: file.name,
+            mimeType: file.type,
+            base64,
+            sortOrder: images.length + fileIndex
+          })
         });
         const result = await parseFunctionResponse(response, 'No se pudo subir la imagen.');
         if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo subir la imagen.');

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { createClient } from '@supabase/supabase-js';
 
 const MAX_SIZE_BYTES = 2 * 1024 * 1024;
+const MAX_IMAGES_PER_PRODUCT = 5;
 const ALLOWED_TYPES = new Map([
   ['image/jpeg', 'jpg'],
   ['image/png', 'png'],
@@ -51,173 +53,127 @@ function missingConfigResponse() {
   return firstMissing ? errorJson(500, `Missing env var: ${firstMissing}`) : null;
 }
 
-function serviceHeaders(extra = {}) {
-  const { serviceRoleKey } = supabaseConfig();
-  return {
-    apikey: serviceRoleKey,
-    Authorization: `Bearer ${serviceRoleKey}`,
-    ...extra
-  };
-}
-
-function parseContentDisposition(value = '') {
-  return Object.fromEntries([...value.matchAll(/;\s*([^=]+)="([^"]*)"/g)].map((match) => [match[1], match[2]]));
-}
-
-function trimPartBuffer(buffer) {
-  let start = 0;
-  let end = buffer.length;
-  if (end - start >= 2 && buffer[start] === 13 && buffer[start + 1] === 10) start += 2;
-  if (end - start >= 2 && buffer[end - 2] === 13 && buffer[end - 1] === 10) end -= 2;
-  return buffer.subarray(start, end);
-}
-
-async function parseMultipart(event) {
-  const contentType = event.headers?.['content-type'] || event.headers?.['Content-Type'] || '';
-  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
-  const boundary = (boundaryMatch?.[1] || boundaryMatch?.[2] || '').trim();
-  if (!boundary) throw new Error('No se encontró boundary de multipart/form-data.');
-
-  const body = Buffer.from(event.body || '', event.isBase64Encoded ? 'base64' : 'utf8');
-  const boundaryBuffer = Buffer.from(`--${boundary}`);
-  const fields = new Map();
-  let cursor = body.indexOf(boundaryBuffer);
-
-  while (cursor !== -1) {
-    cursor += boundaryBuffer.length;
-    if (body[cursor] === 45 && body[cursor + 1] === 45) break;
-
-    const nextBoundary = body.indexOf(boundaryBuffer, cursor);
-    if (nextBoundary === -1) break;
-
-    const rawPart = trimPartBuffer(body.subarray(cursor, nextBoundary));
-    const headerEnd = rawPart.indexOf(Buffer.from('\r\n\r\n'));
-    if (headerEnd !== -1) {
-      const headerText = rawPart.subarray(0, headerEnd).toString('utf8');
-      const content = rawPart.subarray(headerEnd + 4);
-      const headers = Object.fromEntries(headerText.split('\r\n').map((line) => {
-        const separator = line.indexOf(':');
-        return separator === -1 ? ['', ''] : [line.slice(0, separator).toLowerCase(), line.slice(separator + 1).trim()];
-      }).filter(([key]) => key));
-      const disposition = parseContentDisposition(headers['content-disposition'] || '');
-      if (disposition.name) {
-        if (disposition.filename !== undefined) {
-          const fileBuffer = Buffer.from(content);
-          fields.set(disposition.name, {
-            name: disposition.filename,
-            type: headers['content-type'] || 'application/octet-stream',
-            size: fileBuffer.length,
-            async arrayBuffer() {
-              return fileBuffer.buffer.slice(fileBuffer.byteOffset, fileBuffer.byteOffset + fileBuffer.byteLength);
-            }
-          });
-        } else {
-          fields.set(disposition.name, content.toString('utf8'));
-        }
-      }
-    }
-    cursor = nextBoundary;
-  }
-
-  return { get: (name) => fields.get(name) ?? null };
-}
-
-async function supabaseFetch(path, options = {}) {
-  const { url } = supabaseConfig();
-  const response = await fetch(`${url}${path}`, options);
-  const text = await response.text();
-  let data = null;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = text;
-    }
-  }
-  if (!response.ok) {
-    const message = typeof data === 'string' ? data : data?.message || data?.error || 'Error de Supabase';
-    console.error('Supabase request failed:', { path, status: response.status, message });
-    throw new Error(message);
-  }
-  return data;
-}
-
-async function ensureStorageBucket() {
-  const { bucket } = supabaseConfig();
-  console.info('upload-product-image bucket check:', { bucket });
-  try {
-    await supabaseFetch(`/storage/v1/bucket/${encodeURIComponent(bucket)}`, {
-      method: 'GET',
-      headers: serviceHeaders()
-    });
-  } catch (error) {
-    throw new Error(`Bucket de imágenes no disponible (${bucket}): ${error.message}`);
-  }
-}
-
-async function ensureProductExists(productId) {
-  const [record] = await supabaseFetch(`/rest/v1/products?id=eq.${encodeURIComponent(productId)}&select=id`, {
-    method: 'GET',
-    headers: serviceHeaders()
+function getSupabaseAdmin() {
+  const { url, serviceRoleKey } = supabaseConfig();
+  return createClient(url, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false }
   });
-  if (!record?.id) throw new Error('El producto no existe en Supabase. Guarda o migra el producto antes de subir imágenes.');
+}
+
+function parseJsonBody(event) {
+  try {
+    return JSON.parse(event.body || '{}');
+  } catch {
+    throw new Error('JSON inválido para subir imagen.');
+  }
+}
+
+function cleanBase64(value = '') {
+  return String(value).replace(/^data:[^;]+;base64,/, '').replace(/\s/g, '');
+}
+
+function safeFileName(fileName = '', mimeType = '') {
+  const extension = ALLOWED_TYPES.get(mimeType) || 'webp';
+  const base = String(fileName || `imagen.${extension}`)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/\.[^.]+$/, '')
+    .slice(0, 80) || 'imagen';
+  return `${base}.${extension}`;
+}
+
+async function ensureStorageBucket(supabase, bucket) {
+  console.info('upload-product-image bucket check:', { bucket });
+  const { data, error } = await supabase.storage.getBucket(bucket);
+  if (error || !data) {
+    console.error('upload-product-image bucket check failed:', { bucket, message: error?.message || 'Bucket no encontrado' });
+    throw new Error(`Bucket de imágenes no disponible (${bucket}): ${error?.message || 'Bucket no encontrado'}`);
+  }
+}
+
+async function ensureProductExists(supabase, productId) {
+  const { data, error } = await supabase
+    .from('products')
+    .select('id')
+    .eq('id', productId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data?.id) throw new Error('El producto no existe en Supabase. Guarda o migra el producto antes de subir imágenes.');
+}
+
+async function productImageCount(supabase, productId) {
+  const { count, error } = await supabase
+    .from('product_images')
+    .select('id', { count: 'exact', head: true })
+    .eq('product_id', productId);
+  if (error) throw new Error(error.message);
+  return count || 0;
 }
 
 async function uploadImage(event) {
-  const { url, bucket } = supabaseConfig();
+  const { bucket } = supabaseConfig();
   const configError = missingConfigResponse();
   if (configError) return configError;
 
-  console.info('upload-product-image request:', { contentType: event.headers?.['content-type'] || event.headers?.['Content-Type'] || '', isBase64Encoded: event.isBase64Encoded === true });
-  const formData = await parseMultipart(event);
-  if (!validateAdmin(String(formData.get('adminPin') || ''))) {
-    return errorJson(401, 'Admin no autorizado para subir imágenes.');
-  }
+  const payload = parseJsonBody(event);
+  const productId = String(payload.productId || '').trim();
+  const fileName = String(payload.fileName || '').trim();
+  const mimeType = String(payload.mimeType || '').trim().toLowerCase();
+  const base64 = cleanBase64(payload.base64);
+  const sortOrder = Number(payload.sortOrder) || 0;
 
-  const file = formData.get('image');
-  const productId = String(formData.get('productId') || '').trim();
-  console.info('upload-product-image file received:', { hasFile: Boolean(file), productId, bucket, fileName: file?.name || '', fileType: file?.type || '', fileSize: file?.size || 0 });
-  if (!productId) return errorJson(400, 'Falta productId.');
-  if (!file || typeof file.arrayBuffer !== 'function') return errorJson(400, 'Falta archivo de imagen.');
-  if (!ALLOWED_TYPES.has(file.type)) return errorJson(400, 'Solo se aceptan imágenes jpeg, png o webp.');
-  if (file.size > MAX_SIZE_BYTES) return errorJson(400, 'La imagen excede 2 MB.');
+  console.info('upload-product-image JSON request:', { productId, fileName, mimeType, bucket, hasBase64: Boolean(base64) });
 
-  await ensureStorageBucket();
-  await ensureProductExists(productId);
+  if (!validateAdmin(String(payload.adminPin || ''))) return errorJson(401, 'Admin no autorizado para subir imágenes.');
+  if (!productId) return errorJson(400, 'productId requerido.');
+  if (!fileName) return errorJson(400, 'fileName requerido.');
+  if (!mimeType) return errorJson(400, 'mimeType requerido.');
+  if (!base64) return errorJson(400, 'base64 requerido.');
+  if (!ALLOWED_TYPES.has(mimeType)) return errorJson(400, 'Solo se aceptan imágenes jpeg, png o webp.');
 
-  const extension = ALLOWED_TYPES.get(file.type);
-  const random = randomUUID();
-  const storagePath = `${productId}/${Date.now()}-${random}.${extension}`;
-  const bytes = await file.arrayBuffer();
-
+  let buffer;
   try {
-    await supabaseFetch(`/storage/v1/object/${bucket}/${storagePath}`, {
-      method: 'POST',
-      headers: serviceHeaders({
-        'Content-Type': file.type,
-        'Cache-Control': '31536000',
-        'x-upsert': 'false'
-      }),
-      body: Buffer.from(bytes)
+    buffer = Buffer.from(base64, 'base64');
+  } catch {
+    return errorJson(400, 'base64 inválido.');
+  }
+  console.info('upload-product-image decoded file:', { productId, fileName, mimeType, bufferSize: buffer.length, bucket });
+  if (!buffer.length) return errorJson(400, 'base64 inválido o vacío.');
+  if (buffer.length > MAX_SIZE_BYTES) return errorJson(400, 'La imagen excede 2 MB.');
+
+  const supabase = getSupabaseAdmin();
+  await ensureStorageBucket(supabase, bucket);
+  await ensureProductExists(supabase, productId);
+
+  const currentCount = await productImageCount(supabase, productId);
+  if (currentCount >= MAX_IMAGES_PER_PRODUCT) return errorJson(400, 'Máximo 5 imágenes por producto.');
+
+  const cleanName = safeFileName(fileName, mimeType);
+  const storagePath = `products/${productId}/${Date.now()}-${randomUUID()}-${cleanName}`;
+  const { error: storageError } = await supabase.storage
+    .from(bucket)
+    .upload(storagePath, buffer, {
+      contentType: mimeType,
+      cacheControl: '31536000',
+      upsert: false
     });
-  } catch (storageError) {
+
+  if (storageError) {
     console.error('upload-product-image storage upload failed:', { bucket, productId, storagePath, message: storageError.message });
     return errorJson(500, storageError.message || 'Error al subir imagen a Supabase Storage.');
   }
 
-  const publicUrl = `${url}/storage/v1/object/public/${bucket}/${storagePath}`;
-  const sortOrder = Number(formData.get('sortOrder')) || 0;
-  let record;
-  try {
-    [record] = await supabaseFetch('/rest/v1/product_images?select=id,product_id,image_url,storage_path,sort_order,created_at', {
-      method: 'POST',
-      headers: serviceHeaders({
-        'Content-Type': 'application/json',
-        Prefer: 'return=representation'
-      }),
-      body: JSON.stringify([{ product_id: productId, image_url: publicUrl, storage_path: storagePath, sort_order: sortOrder }])
-    });
-  } catch (dbError) {
+  const { data: publicUrlData } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+  const publicUrl = publicUrlData?.publicUrl || '';
+  const { data: record, error: dbError } = await supabase
+    .from('product_images')
+    .insert({ product_id: productId, image_url: publicUrl, storage_path: storagePath, sort_order: sortOrder || currentCount })
+    .select('id, product_id, image_url, storage_path, sort_order, created_at')
+    .single();
+
+  if (dbError) {
     console.error('upload-product-image product_images insert failed:', { productId, storagePath, message: dbError.message });
     return errorJson(500, dbError.message || 'Error al guardar registro de imagen del producto.');
   }
@@ -227,7 +183,9 @@ async function uploadImage(event) {
     id: record.id,
     product_id: record.product_id,
     image_url: record.image_url,
+    url: record.image_url,
     storage_path: record.storage_path,
+    path: record.storage_path,
     sort_order: record.sort_order,
     created_at: record.created_at
   });
@@ -238,30 +196,23 @@ async function deleteImage(event) {
   const configError = missingConfigResponse();
   if (configError) return configError;
 
-  let payload = {};
-  try {
-    payload = JSON.parse(event.body || '{}');
-  } catch {
-    return errorJson(400, 'JSON inválido para eliminar imagen.');
-  }
+  const payload = parseJsonBody(event);
   if (!validateAdmin(String(payload.adminPin || ''))) {
     return errorJson(401, 'Admin no autorizado para eliminar imágenes.');
   }
   if (!payload.id || !payload.storage_path) return errorJson(400, 'Faltan id o storage_path.');
 
-  await supabaseFetch(`/rest/v1/product_images?id=eq.${encodeURIComponent(payload.id)}`, {
-    method: 'DELETE',
-    headers: serviceHeaders({ Prefer: 'return=minimal' })
-  });
+  const supabase = getSupabaseAdmin();
+  const { error: dbError } = await supabase
+    .from('product_images')
+    .delete()
+    .eq('id', payload.id);
+  if (dbError) return errorJson(500, dbError.message || 'No se pudo eliminar el registro de imagen.');
 
   let storageWarning = '';
-  try {
-    await supabaseFetch(`/storage/v1/object/${bucket}`, {
-      method: 'DELETE',
-      headers: serviceHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ prefixes: [payload.storage_path] })
-    });
-  } catch (error) {
+  const { error: storageError } = await supabase.storage.from(bucket).remove([payload.storage_path]);
+  if (storageError) {
+    console.error('upload-product-image storage delete failed:', { bucket, storagePath: payload.storage_path, message: storageError.message });
     storageWarning = 'Se borró el registro, pero no se pudo borrar el archivo del bucket.';
   }
 
@@ -275,7 +226,7 @@ export async function handler(event) {
     if (event.httpMethod === 'DELETE') return await deleteImage(event);
     return errorJson(405, 'Método no permitido.');
   } catch (error) {
-    console.error('upload-product-image failed:', error);
+    console.error('upload-product-image failed:', { message: error.message, stack: error.stack });
     return errorJson(500, error.message || 'Error inesperado al manejar la imagen.');
   }
 }
