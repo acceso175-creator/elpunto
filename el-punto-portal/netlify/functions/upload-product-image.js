@@ -46,6 +46,11 @@ function missingConfig() {
   ].filter(Boolean);
 }
 
+function missingConfigResponse() {
+  const [firstMissing] = missingConfig();
+  return firstMissing ? errorJson(500, `Missing env var: ${firstMissing}`) : null;
+}
+
 function serviceHeaders(extra = {}) {
   const { serviceRoleKey } = supabaseConfig();
   return {
@@ -78,17 +83,24 @@ async function supabaseFetch(path, options = {}) {
     }
   }
   if (!response.ok) {
-    throw new Error(typeof data === 'string' ? data : data?.message || 'Error de Supabase');
+    const message = typeof data === 'string' ? data : data?.message || data?.error || 'Error de Supabase';
+    console.error('Supabase request failed:', { path, status: response.status, message });
+    throw new Error(message);
   }
   return data;
 }
 
 async function ensureStorageBucket() {
   const { bucket } = supabaseConfig();
-  await supabaseFetch(`/storage/v1/bucket/${encodeURIComponent(bucket)}`, {
-    method: 'GET',
-    headers: serviceHeaders()
-  });
+  console.info('upload-product-image bucket check:', { bucket });
+  try {
+    await supabaseFetch(`/storage/v1/bucket/${encodeURIComponent(bucket)}`, {
+      method: 'GET',
+      headers: serviceHeaders()
+    });
+  } catch (error) {
+    throw new Error(`Bucket de imágenes no disponible (${bucket}): ${error.message}`);
+  }
 }
 
 async function ensureProductExists(productId) {
@@ -101,11 +113,10 @@ async function ensureProductExists(productId) {
 
 async function uploadImage(event) {
   const { url, bucket } = supabaseConfig();
-  const missing = missingConfig();
-  if (missing.length) {
-    return errorJson(500, `Faltan variables de entorno en Netlify: ${missing.join(', ')}. Revisa que también estén disponibles para Deploy Previews.`);
-  }
+  const configError = missingConfigResponse();
+  if (configError) return configError;
 
+  console.info('upload-product-image request:', { contentType: event.headers?.['content-type'] || event.headers?.['Content-Type'] || '', isBase64Encoded: event.isBase64Encoded === true });
   const formData = await parseMultipart(event);
   if (!validateAdmin(String(formData.get('adminPin') || ''))) {
     return errorJson(401, 'Admin no autorizado para subir imágenes.');
@@ -113,6 +124,7 @@ async function uploadImage(event) {
 
   const file = formData.get('image');
   const productId = String(formData.get('productId') || '').trim();
+  console.info('upload-product-image file received:', { hasFile: Boolean(file), productId, bucket, fileName: file?.name || '', fileType: file?.type || '', fileSize: file?.size || 0 });
   if (!productId) return errorJson(400, 'Falta productId.');
   if (!file || typeof file.arrayBuffer !== 'function') return errorJson(400, 'Falta archivo de imagen.');
   if (!ALLOWED_TYPES.has(file.type)) return errorJson(400, 'Solo se aceptan imágenes jpeg, png o webp.');
@@ -126,26 +138,37 @@ async function uploadImage(event) {
   const storagePath = `${productId}/${Date.now()}-${random}.${extension}`;
   const bytes = await file.arrayBuffer();
 
-  await supabaseFetch(`/storage/v1/object/${bucket}/${storagePath}`, {
-    method: 'POST',
-    headers: serviceHeaders({
-      'Content-Type': file.type,
-      'Cache-Control': '31536000',
-      'x-upsert': 'false'
-    }),
-    body: Buffer.from(bytes)
-  });
+  try {
+    await supabaseFetch(`/storage/v1/object/${bucket}/${storagePath}`, {
+      method: 'POST',
+      headers: serviceHeaders({
+        'Content-Type': file.type,
+        'Cache-Control': '31536000',
+        'x-upsert': 'false'
+      }),
+      body: Buffer.from(bytes)
+    });
+  } catch (storageError) {
+    console.error('upload-product-image storage upload failed:', { bucket, productId, storagePath, message: storageError.message });
+    return errorJson(500, storageError.message || 'Error al subir imagen a Supabase Storage.');
+  }
 
   const publicUrl = `${url}/storage/v1/object/public/${bucket}/${storagePath}`;
   const sortOrder = Number(formData.get('sortOrder')) || 0;
-  const [record] = await supabaseFetch('/rest/v1/product_images?select=id,product_id,image_url,storage_path,sort_order,created_at', {
-    method: 'POST',
-    headers: serviceHeaders({
-      'Content-Type': 'application/json',
-      Prefer: 'return=representation'
-    }),
-    body: JSON.stringify([{ product_id: productId, image_url: publicUrl, storage_path: storagePath, sort_order: sortOrder }])
-  });
+  let record;
+  try {
+    [record] = await supabaseFetch('/rest/v1/product_images?select=id,product_id,image_url,storage_path,sort_order,created_at', {
+      method: 'POST',
+      headers: serviceHeaders({
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation'
+      }),
+      body: JSON.stringify([{ product_id: productId, image_url: publicUrl, storage_path: storagePath, sort_order: sortOrder }])
+    });
+  } catch (dbError) {
+    console.error('upload-product-image product_images insert failed:', { productId, storagePath, message: dbError.message });
+    return errorJson(500, dbError.message || 'Error al guardar registro de imagen del producto.');
+  }
 
   return json(200, {
     ok: true,
@@ -160,8 +183,8 @@ async function uploadImage(event) {
 
 async function deleteImage(event) {
   const { bucket } = supabaseConfig();
-  const missing = missingConfig();
-  if (missing.length) return errorJson(500, `Faltan variables de entorno en Netlify: ${missing.join(', ')}. Revisa que también estén disponibles para Deploy Previews.`);
+  const configError = missingConfigResponse();
+  if (configError) return configError;
 
   let payload = {};
   try {

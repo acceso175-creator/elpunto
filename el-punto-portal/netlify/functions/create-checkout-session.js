@@ -14,11 +14,25 @@ function isNumericPrice(value) {
   return numericPrice(value) !== null;
 }
 
+function isDiscountActive(product) {
+  return product?.discount_active === true || product?.discount_active === 'true' || product?.discount_active === 1;
+}
+
+function hasValidDiscount(product) {
+  const price = Number(product?.price || 0);
+  const discountPrice = Number(product?.discount_price || 0);
+  return isDiscountActive(product) && Number.isFinite(price) && price > 0 && Number.isFinite(discountPrice) && discountPrice > 0 && discountPrice < price;
+}
+
+function getEffectivePrice(product) {
+  const price = Number(product?.price || 0);
+  const discountPrice = Number(product?.discount_price || 0);
+  if (hasValidDiscount(product)) return discountPrice;
+  return Number.isFinite(price) && price > 0 ? price : null;
+}
+
 function effectiveProductPrice(product) {
-  const price = numericPrice(product.price);
-  const discountPrice = numericPrice(product.discount_price);
-  if (product.discount_active === true && discountPrice !== null && (price === null || discountPrice < price)) return discountPrice;
-  return price;
+  return getEffectivePrice(product);
 }
 
 function optionExtra(selectedOptions = {}) {
@@ -103,7 +117,7 @@ export async function handler(event) {
         quantity: item.quantity,
         unit_price: unitPrice,
         original_price: numericPrice(product.price),
-        discount_price: product.discount_active === true ? numericPrice(product.discount_price) : null,
+        discount_price: hasValidDiscount(product) ? numericPrice(product.discount_price) : null,
         effective_price: effectivePrice,
         cost,
         line_profit: cost !== null ? (unitPrice - cost) * item.quantity : null,

@@ -196,20 +196,32 @@ function itemBasePrice(item) {
 }
 
 function itemDiscountPrice(item) {
-  return numericValue(item?.discountPrice ?? item?.discount_price);
+  return numericValue(item?.discount_price ?? item?.discountPrice);
+}
+
+function isDiscountActive(product) {
+  return product?.discount_active === true || product?.discountActive === true || product?.discount_active === 'true' || product?.discountActive === 'true' || product?.discount_active === 1 || product?.discountActive === 1;
+}
+
+function hasValidDiscount(product) {
+  const price = Number(product?.price || 0);
+  const discountPrice = Number(product?.discount_price ?? product?.discountPrice ?? 0);
+  return isDiscountActive(product) && Number.isFinite(price) && price > 0 && Number.isFinite(discountPrice) && discountPrice > 0 && discountPrice < price;
+}
+
+function getEffectivePrice(product) {
+  const price = Number(product?.price ?? product?.unitPrice ?? product?.unit_price ?? 0);
+  const discountPrice = Number(product?.discount_price ?? product?.discountPrice ?? 0);
+  if (hasValidDiscount(product)) return discountPrice;
+  return Number.isFinite(price) && price > 0 ? price : null;
 }
 
 function hasActiveDiscount(item) {
-  const basePrice = itemBasePrice(item);
-  const discountPrice = itemDiscountPrice(item);
-  return (item?.discountActive === true || item?.discount_active === true)
-    && discountPrice !== null
-    && (basePrice === null || discountPrice < basePrice);
+  return hasValidDiscount(item);
 }
 
 function itemNumericPrice(item) {
-  if (hasActiveDiscount(item)) return itemDiscountPrice(item);
-  return itemBasePrice(item);
+  return getEffectivePrice(item);
 }
 
 function hasNumericPrice(item) {
@@ -663,7 +675,8 @@ function ProductCard({ item, categoryId, addToCart, images }) {
 
   const basePrice = itemBasePrice(item);
   const discountPrice = itemDiscountPrice(item);
-  const showDiscount = hasActiveDiscount(item);
+  const effectivePrice = getEffectivePrice(item);
+  const showDiscount = hasValidDiscount(item);
 
   function toggleIngredient(ingredient) {
     setRemoved((current) => current.includes(ingredient)
@@ -682,7 +695,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       priceLabel: item.priceLabel,
       discountPrice: item.discountPrice,
       discountActive: item.discountActive,
-      effectivePrice: itemNumericPrice(item),
+      effectivePrice,
       quantity,
       removedIngredients: removed,
       selectedOptions,
@@ -1456,6 +1469,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <li>El menú público usa precio efectivo: descuento activo válido menor que precio normal; si no, precio normal.</li>
               <li>Cada producto se edita con estado aislado y se guarda con botón Guardar producto.</li>
               <li>Ingredientes se agregan con input enfocado, Enter y persistencia al guardar.</li>
+              <li>Subida de imágenes devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
             </ul>
           </div>
           <p className="small-note">Ojo: este PIN no es seguridad real. Para producción hay que conectar Supabase, Firebase o un backend.</p>
@@ -1844,6 +1858,17 @@ function ProductProfitSummary({ item }) {
   );
 }
 
+
+async function parseFunctionResponse(response, fallbackMessage) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { ok: false, error: text || fallbackMessage };
+  }
+}
+
 function ProductImageManager({ item, category, images, adminPin, onSaveProduct, refreshProductImages, productImagesError }) {
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
@@ -1883,7 +1908,7 @@ function ProductImageManager({ item, category, images, adminPin, onSaveProduct, 
           method: 'POST',
           body: formData
         });
-        const result = await response.json().catch(() => ({ error: 'La función de subida no respondió JSON.' }));
+        const result = await parseFunctionResponse(response, 'No se pudo subir la imagen.');
         if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo subir la imagen.');
       }
       await refreshProductImages();
@@ -1923,7 +1948,7 @@ function ProductImageManager({ item, category, images, adminPin, onSaveProduct, 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminPin, id: image.id, storage_path: image.storage_path })
       });
-      const result = await response.json().catch(() => ({ error: 'La función de imágenes no respondió JSON.' }));
+      const result = await parseFunctionResponse(response, 'No se pudo eliminar la imagen.');
       if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo eliminar la imagen.');
       await refreshProductImages();
       setMessage(result.warning || 'Imagen eliminada.');
