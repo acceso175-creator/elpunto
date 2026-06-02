@@ -42,9 +42,17 @@ export function slugify(text) {
 export async function ensureCategory(supabase, category) {
   const cleanName = String(category?.name || category?.category || category || '').trim() || 'Menú';
   const slug = category?.slug || category?.id || slugify(cleanName);
+  const sortOrderValue = category?.sortOrder ?? category?.sort_order;
+  const payload = {
+    id: category?.supabaseCategoryId || category?.uuid || undefined,
+    name: cleanName,
+    slug,
+    ...(sortOrderValue !== undefined ? { sort_order: Number(sortOrderValue) } : {}),
+    active: category?.active !== false
+  };
   const { data, error } = await supabase
     .from('categories')
-    .upsert({ id: category?.supabaseCategoryId || category?.uuid || undefined, name: cleanName, slug, active: category?.active !== false }, { onConflict: 'slug' })
+    .upsert(payload, { onConflict: 'slug' })
     .select('id, name, slug, sort_order, active')
     .single();
   if (error) throw new Error(error.message);
@@ -57,8 +65,8 @@ function isOptionsSchemaCacheError(error) {
 
 async function productsSnapshot(supabase, includeUnavailable, includeOptions = true) {
   const fields = includeOptions
-    ? 'id, category_id, name, description, price, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)'
-    : 'id, category_id, name, description, price, price_label, available, favorite, badge, sort_order, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)';
+    ? 'id, category_id, name, description, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)'
+    : 'id, category_id, name, description, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)';
   let productQuery = supabase
     .from('products')
     .select(fields)

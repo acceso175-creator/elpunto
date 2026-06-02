@@ -11,7 +11,8 @@ const STORAGE = {
   metrics: 'elpunto_metrics_v1',
   profile: 'elpunto_profile_v1',
   cart: 'elpunto_cart_v1',
-  session: 'elpunto_session_v1'
+  session: 'elpunto_session_v1',
+  lastStripeOrder: 'elpunto_last_stripe_order_v1'
 };
 
 const ADMIN_PIN = '1234';
@@ -51,8 +52,10 @@ function mapBusinessSettings(row) {
 }
 
 async function adminRequest(functionName, { method = 'POST', pin, body = {} } = {}) {
-  const response = await fetch(`/.netlify/functions/${functionName}`, {
+  const endpoint = `/.netlify/functions/${functionName}${method === 'GET' ? `?t=${Date.now()}` : ''}`;
+  const response = await fetch(endpoint, {
     method,
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
       ...(pin ? { 'x-admin-pin': pin } : {})
@@ -115,12 +118,12 @@ function categoryExists(menu, name) {
 
 function categoryOptions(menu) {
   const byId = new Map();
-  BASE_CATEGORY_NAMES.forEach((name) => {
+  BASE_CATEGORY_NAMES.forEach((name, index) => {
     const category = menu.find((item) => slugify(item.name) === slugify(name) || item.id === slugify(name));
-    byId.set(slugify(name), category || createCategory(name));
+    byId.set(slugify(name), category || { ...createCategory(name), sortOrder: index });
   });
-  menu.forEach((category) => byId.set(category.id || slugify(category.name), category));
-  return [...byId.values()];
+  menu.forEach((category, index) => byId.set(category.id || slugify(category.name), { ...category, sortOrder: Number(category.sortOrder ?? category.sort_order ?? index) }));
+  return [...byId.values()].sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0) || String(a.name).localeCompare(String(b.name)));
 }
 
 function normalizeIngredients(ingredients) {
@@ -140,19 +143,25 @@ function normalizeIngredients(ingredients) {
 
 function normalizeMenu(menu) {
   if (!Array.isArray(menu)) return normalizeMenu(initialMenu);
-  return menu.map((category) => ({
+  return menu.map((category, categoryIndex) => ({
     ...category,
     id: category.id || slugify(category.name),
     name: category.name || 'Categoría',
     description: category.description || categoryDescription(category.name),
+    sortOrder: Number(category.sortOrder ?? category.sort_order ?? categoryIndex),
     items: (category.items || []).map((item) => ({
       ...item,
+      cost: item.cost ?? null,
+      ingredientCost: item.ingredientCost ?? item.ingredient_cost ?? null,
+      packagingCost: item.packagingCost ?? item.packaging_cost ?? null,
+      discountPrice: item.discountPrice ?? item.discount_price ?? null,
+      discountActive: item.discountActive ?? item.discount_active ?? false,
       isSupabaseProduct: item.isSupabaseProduct === true,
       supabaseProductId: item.isSupabaseProduct === true && isUuid(item.supabaseProductId || item.id) ? (item.supabaseProductId || item.id) : undefined,
       images: Array.isArray(item.images) ? item.images.filter((image) => typeof image === 'string' && !image.startsWith('data:')) : [],
       ingredients: normalizeIngredients(item.ingredients)
     }))
-  }));
+  })).sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0) || String(a.name).localeCompare(String(b.name)));
 }
 
 function removableIngredientNames(ingredients) {
@@ -172,8 +181,69 @@ function usePersistedState(key, fallback, normalize = identity) {
 }
 
 function formatMoney(value) {
-  if (!value) return 'Precio por confirmar';
-  return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value);
+  if (value === null || value === undefined || value === '' || Number.isNaN(Number(value))) return 'Precio por confirmar';
+  return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(Number(value));
+}
+
+function numericValue(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function itemBasePrice(item) {
+  return numericValue(item?.price ?? item?.unitPrice ?? item?.unit_price);
+}
+
+function itemDiscountPrice(item) {
+  return numericValue(item?.discountPrice ?? item?.discount_price);
+}
+
+function hasActiveDiscount(item) {
+  return (item?.discountActive === true || item?.discount_active === true) && itemDiscountPrice(item) !== null;
+}
+
+function itemNumericPrice(item) {
+  if (hasActiveDiscount(item)) return itemDiscountPrice(item);
+  return itemBasePrice(item);
+}
+
+function hasNumericPrice(item) {
+  return itemNumericPrice(item) !== null;
+}
+
+function parseOptionalNumber(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function adminNumberInputValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? String(value) : '';
+}
+
+function formatPercent(value) {
+  if (!Number.isFinite(value)) return '—';
+  return `${value.toFixed(1)}%`;
+}
+
+function productProfitMetrics(item) {
+  const rawCost = item?.cost;
+  const costNumber = rawCost === null || rawCost === undefined || rawCost === '' ? null : Number(rawCost);
+  const cost = Number.isFinite(costNumber) && costNumber >= 0 ? costNumber : null;
+  const price = itemBasePrice(item);
+  const discount = itemDiscountPrice(item);
+  return {
+    normalProfit: cost !== null && price !== null ? price - cost : null,
+    discountProfit: cost !== null && discount !== null ? discount - cost : null,
+    normalMargin: cost !== null && price !== null ? ((price - cost) / price) * 100 : null,
+    discountMargin: cost !== null && discount !== null ? ((discount - cost) / discount) * 100 : null
+  };
+}
+
+function cartItemsMissingPrice(cart) {
+  return cart.filter((item) => !hasNumericPrice(item));
 }
 
 function paymentLabel(value) {
@@ -259,7 +329,7 @@ function ensureSessionMetric() {
 
 function calculateLine(item) {
   const proteinExtra = Object.values(item.selectedOptions || {}).some((value) => String(value).includes('+$25'));
-  return (Number(item.price) || 0) + (proteinExtra ? 25 : 0);
+  return (itemNumericPrice(item) || 0) + (proteinExtra ? 25 : 0);
 }
 
 function createOrderNumber() {
@@ -278,14 +348,23 @@ function App() {
   const [business, setBusiness] = usePersistedState(STORAGE.business, businessDefaults);
   const [cart, setCart] = usePersistedState(STORAGE.cart, []);
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
-  const isAdminPath = window.location.pathname === '/admin';
-  const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : 'inicio');
+  const currentPath = window.location.pathname;
+  const isAdminPath = currentPath === '/admin';
+  const isPaymentSuccessPath = currentPath === '/payment-success';
+  const isPaymentCancelPath = currentPath === '/payment-cancel';
+  const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : (window.location.hash === '#pedido' ? 'pedido' : 'inicio'));
   const [productImages, setProductImages] = useState({});
   const [productImagesError, setProductImagesError] = useState('');
   const [dataSource, setDataSource] = useState(isSupabaseConfigured ? 'loading' : 'local');
 
   useEffect(() => {
     ensureSessionMetric();
+  }, []);
+
+  useEffect(() => {
+    if (window.location.hash === '#pedido') {
+      window.setTimeout(() => document.getElementById('pedido')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+    }
   }, []);
 
   useEffect(() => {
@@ -363,6 +442,10 @@ function App() {
     window.setTimeout(() => {
       document.getElementById(sectionIds[section] || section)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 50);
+  }
+
+  if (isPaymentSuccessPath || isPaymentCancelPath) {
+    return <PaymentResultPage type={isPaymentSuccessPath ? 'success' : 'cancel'} business={business} />;
   }
 
   if (isAdminPath) {
@@ -574,6 +657,10 @@ function ProductCard({ item, categoryId, addToCart, images }) {
     if (imageIndex >= imageUrls.length) setImageIndex(0);
   }, [imageIndex, imageUrls.length]);
 
+  const basePrice = itemBasePrice(item);
+  const discountPrice = itemDiscountPrice(item);
+  const showDiscount = hasActiveDiscount(item);
+
   function toggleIngredient(ingredient) {
     setRemoved((current) => current.includes(ingredient)
       ? current.filter((value) => value !== ingredient)
@@ -584,9 +671,14 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   function handleAdd() {
     addToCart({
       id: item.id,
+      supabaseProductId: item.supabaseProductId || (isUuid(item.id) ? item.id : undefined),
       categoryId,
       name: item.name,
       price: item.price,
+      priceLabel: item.priceLabel,
+      discountPrice: item.discountPrice,
+      discountActive: item.discountActive,
+      effectivePrice: itemNumericPrice(item),
       quantity,
       removedIngredients: removed,
       selectedOptions,
@@ -619,7 +711,21 @@ function ProductCard({ item, categoryId, addToCart, images }) {
         </div>
         {item.badge && <span className="badge">{item.badge}</span>}
       </div>
-      <strong className="price">{item.price ? formatMoney(item.price) : (item.priceLabel || 'Precio por confirmar')}</strong>
+      {basePrice ? (
+        <div className={showDiscount ? 'price-stack' : 'price'}>
+          {showDiscount ? (
+            <>
+              <span className="price-old">{formatMoney(basePrice)}</span>
+              <strong className="price-discount">{formatMoney(discountPrice)}</strong>
+              <span className="badge promo-badge">Promo</span>
+            </>
+          ) : (
+            <strong>{formatMoney(basePrice)}</strong>
+          )}
+        </div>
+      ) : (
+        <strong className="price">{item.priceLabel || 'Precio por confirmar'}</strong>
+      )}
 
       {optionList.length > 0 && (
         <div className="modifiers">
@@ -671,9 +777,27 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
   const [geoLink, setGeoLink] = useState('');
   const [notes, setNotes] = useState('');
   const [isLocating, setIsLocating] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [checkoutError, setCheckoutError] = useState('');
   const selectedPaymentLabel = paymentLabel(payment);
-  const isOnlinePaymentReady = Boolean(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY) && cartTotal > 0;
+  const itemsMissingPrice = useMemo(() => cartItemsMissingPrice(cart), [cart]);
+  const hasPriceConfirmation = itemsMissingPrice.length > 0;
+  const isCartTotalNumeric = Number.isFinite(Number(cartTotal)) && Number(cartTotal) > 0;
+  const checkoutDisabledReason = !cart.length
+    ? 'empty_cart'
+    : hasPriceConfirmation
+      ? 'missing_prices'
+      : !isCartTotalNumeric
+        ? 'invalid_total'
+        : '';
+  const isOnlinePaymentReady = payment === 'pago_en_linea' && !checkoutDisabledReason;
   const cryptoWallets = cryptoWalletsFromBusiness(business);
+
+  useEffect(() => {
+    if (payment === 'pago_en_linea' && checkoutDisabledReason) {
+      console.warn('Stripe checkout disabled reason:', checkoutDisabledReason);
+    }
+  }, [payment, checkoutDisabledReason]);
 
   function getLocation() {
     if (!navigator.geolocation) {
@@ -695,8 +819,8 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
     );
   }
 
-  function buildMessage() {
-    const orderNumber = createOrderNumber();
+  function buildMessage(forStripeOrderNumber = '') {
+    const orderNumber = forStripeOrderNumber || createOrderNumber();
     const items = cart.map((item, index) => {
       const opts = Object.entries(item.selectedOptions || {})
         .map(([key, value]) => `${key}: ${value}`)
@@ -713,12 +837,46 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
 
     const totalText = cartTotal ? formatMoney(cartTotal) : 'Por confirmar';
     const paymentNote = payment === 'pago_en_linea'
-      ? '\nPago en línea seleccionado. Pendiente de confirmación.'
+      ? '\nEstado: pendiente de pago'
       : payment === 'criptomonedas'
         ? '\nPago con criptomonedas seleccionado. Solicito datos de pago.'
         : '';
 
     return `Hola, quiero hacer un pedido en El Punto.\n\nOrden: ${orderNumber}\nNombre: ${profile.name || 'Cliente'}\nTeléfono: ${profile.phone || 'No capturado'}\nMétodo de pago: ${selectedPaymentLabel}${paymentNote}\n${orderType === 'domicilio' ? 'Tipo: A domicilio' : 'Tipo: Para recoger'}${locationText}\n\nPedido:\n${items}\n\nTotal estimado: ${totalText}\nNotas: ${notes || 'Sin notas'}\n\nPor favor confírmenme disponibilidad y tiempo estimado.`;
+  }
+
+  async function startStripeCheckout() {
+    if (!isOnlinePaymentReady || checkoutLoading) return;
+    if (orderType === 'domicilio' && !address && !geoLink) {
+      setCheckoutError('Para domicilio agrega dirección o ubicación antes de pagar.');
+      return;
+    }
+    setCheckoutLoading(true);
+    setCheckoutError('');
+    try {
+      const whatsappMessage = buildMessage();
+      const response = await fetch('/.netlify/functions/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cart,
+          customerName: profile.name,
+          customerPhone: profile.phone,
+          orderType,
+          deliveryAddress: orderType === 'domicilio' ? [address, geoLink].filter(Boolean).join(' | ') : '',
+          notes,
+          paymentMethod: payment,
+          whatsappMessage
+        })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'No se pudo iniciar el pago con tarjeta.');
+      writeStorage(STORAGE.lastStripeOrder, { orderId: result.orderId, orderNumber: result.orderNumber, customerName: profile.name, customerPhone: profile.phone });
+      window.location.href = result.checkoutUrl;
+    } catch (error) {
+      setCheckoutError(error.message || 'No se pudo iniciar el pago con tarjeta.');
+      setCheckoutLoading(false);
+    }
   }
 
   function sendWhatsApp() {
@@ -800,10 +958,21 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
         {payment === 'pago_en_linea' && (
           <div className="payment-info-card">
             <p>Paga de forma segura con tarjeta antes de enviar tu pedido.</p>
-            {!isOnlinePaymentReady && (
-              <p className="small-note">Pago en línea todavía no está configurado o el pedido requiere confirmar precio por WhatsApp.</p>
+            {hasPriceConfirmation && (
+              <div className="small-note warning-note">
+                <p>Este pedido tiene productos con precio por confirmar.</p>
+                {itemsMissingPrice.map((item) => (
+                  <p key={item.cartId || item.id || item.name}>Falta precio: {item.name || 'Producto sin nombre'}</p>
+                ))}
+              </div>
             )}
-            <button className="button--ghost" disabled={!isOnlinePaymentReady}>Pagar con tarjeta</button>
+            {!hasPriceConfirmation && checkoutDisabledReason === 'invalid_total' && (
+              <p className="small-note warning-note">El total del pedido no es válido para pagar en línea.</p>
+            )}
+            {checkoutError && <p className="error-note">{checkoutError}</p>}
+            <button className="button--ghost" disabled={!isOnlinePaymentReady || checkoutLoading} onClick={startStripeCheckout}>
+              {checkoutLoading ? 'Creando pago...' : 'Pagar con tarjeta'}
+            </button>
           </div>
         )}
 
@@ -840,6 +1009,40 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
         <p className="small-note">El portal genera el mensaje. El pedido queda confirmado hasta que el negocio responda por WhatsApp.</p>
       </div>
     </section>
+  );
+}
+
+
+function PaymentResultPage({ type, business }) {
+  const params = new URLSearchParams(window.location.search);
+  const storedOrder = readStorage(STORAGE.lastStripeOrder, {});
+  const orderNumber = params.get('order_number') || storedOrder.orderNumber || '';
+  const isSuccess = type === 'success';
+
+  function sendPaymentWhatsApp() {
+    const number = String(business.whatsapp || '').replace(/[^0-9]/g, '');
+    if (!number) {
+      alert('Falta configurar el número de WhatsApp en Admin.');
+      return;
+    }
+    const message = `Pago en línea realizado. Favor de confirmar mi pedido.${orderNumber ? `\nNúmero de orden: ${orderNumber}` : ''}`;
+    window.open(`https://wa.me/${number}?text=${encodeURIComponent(message)}`, '_blank');
+  }
+
+  return (
+    <main>
+      <section className="section payment-result">
+        <div className="panel narrow">
+          <p className="eyebrow">{isSuccess ? 'Pago recibido' : 'Pago cancelado'}</p>
+          <h1>{isSuccess ? 'Pago recibido. Tu pedido está en proceso de confirmación.' : 'Pago cancelado. Puedes intentar de nuevo o mandar tu pedido por WhatsApp.'}</h1>
+          {orderNumber && <p className="success">Orden: {orderNumber}</p>}
+          <div className="payment-result__actions">
+            {isSuccess && <button onClick={sendPaymentWhatsApp}>Enviar detalles por WhatsApp</button>}
+            <a className="button--ghost" href={isSuccess ? '/' : '/#pedido'}>{isSuccess ? 'Volver al inicio' : 'Volver al pedido'}</a>
+          </div>
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -893,6 +1096,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonDraft, setJsonDraft] = useState(JSON.stringify(menu, null, 2));
   const [adminStatus, setAdminStatus] = useState('');
+  const [orders, setOrders] = useState([]);
+  const [ordersStatus, setOrdersStatus] = useState('');
 
   useEffect(() => {
     const refresh = () => setMetrics(readStorage(STORAGE.metrics, defaultMetrics()));
@@ -910,22 +1115,44 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     if (pin !== ADMIN_PIN) alert('PIN incorrecto. En modo local el PIN demo es 1234.');
   }
 
+  async function loadOrders() {
+    if (!isSupabaseConfigured) return;
+    try {
+      const result = await adminRequest('admin-orders', { method: 'GET', pin });
+      setOrders(result.orders || []);
+      setOrdersStatus('Órdenes sincronizadas.');
+    } catch (error) {
+      setOrdersStatus(error.message);
+    }
+  }
+
   async function reloadAdminMenu() {
     if (!isSupabaseConfigured) return;
     try {
+      setDataSource('supabase-loading');
+      setAdminStatus('Cargando productos reales desde Supabase...');
+      localStorage.removeItem(STORAGE.menu);
+      setMenu([]);
       const snapshot = await adminRequest('admin-products', { method: 'GET', pin });
-      setMenu(menuFromAdminSnapshot(snapshot));
+      const nextMenu = menuFromAdminSnapshot(snapshot);
+      setMenu(nextMenu);
       setDataSource('supabase-admin');
-      setAdminStatus('Menú sincronizado con Supabase.');
+      console.info('Admin products source:', 'supabase', { categories: snapshot.categories?.length || 0, products: snapshot.products?.length || 0 });
+      setAdminStatus('Menú sincronizado con Supabase. Fuente: Supabase.');
       await refreshProductImages();
       return snapshot;
     } catch (error) {
+      setDataSource('supabase-error');
+      console.warn('Admin products source:', 'supabase_error', error.message);
       setAdminStatus(error.message);
     }
   }
 
   useEffect(() => {
-    if (unlocked && isSupabaseConfigured) reloadAdminMenu();
+    if (unlocked && isSupabaseConfigured) {
+      reloadAdminMenu();
+      loadOrders();
+    }
   }, [unlocked]);
 
   async function persistProduct(category, product, method = 'PATCH') {
@@ -946,7 +1173,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   async function persistCategory(category, method = 'POST') {
     if (!isSupabaseConfigured) return;
     try {
-      const snapshot = await adminRequest('admin-categories', { method, pin, body: { category, id: category.supabaseCategoryId, slug: category.id, name: category.name } });
+      const snapshot = await adminRequest('admin-categories', { method, pin, body: { category, id: category.supabaseCategoryId, slug: category.id, name: category.name, sortOrder: category.sortOrder } });
       if (snapshot.categories) setMenu(menuFromAdminSnapshot(snapshot));
       setAdminStatus('Categoría guardada en Supabase.');
     } catch (error) {
@@ -1007,7 +1234,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const cleanName = String(name || '').trim();
     if (!cleanName) return '';
     const id = slugify(cleanName);
-    const category = createCategory(cleanName);
+    const category = { ...createCategory(cleanName), sortOrder: menu.length };
     setMenu((current) => categoryExists(current, cleanName) ? current : [...current, category]);
     persistCategory(category);
     return id;
@@ -1027,6 +1254,37 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     if (renamed) persistCategory(renamed, 'PATCH');
   }
 
+
+  async function moveCategory(categoryId, direction) {
+    const ordered = categoryOptions(menu);
+    const currentIndex = ordered.findIndex((category) => category.id === categoryId);
+    const targetIndex = currentIndex + direction;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= ordered.length) return;
+    const reordered = [...ordered];
+    [reordered[currentIndex], reordered[targetIndex]] = [reordered[targetIndex], reordered[currentIndex]];
+    const withSortOrder = reordered.map((category, index) => ({ ...category, sortOrder: index }));
+    setMenu((current) => normalizeMenu(withSortOrder.map((orderedCategory) => {
+      const existing = current.find((category) => category.id === orderedCategory.id || category.supabaseCategoryId === orderedCategory.supabaseCategoryId);
+      return existing ? { ...existing, sortOrder: orderedCategory.sortOrder } : orderedCategory;
+    })));
+    if (!isSupabaseConfigured) return;
+    try {
+      const snapshot = await adminRequest('admin-categories', {
+        method: 'PATCH',
+        pin,
+        body: {
+          action: 'reorder',
+          categories: withSortOrder.map((category) => ({ id: category.supabaseCategoryId, slug: category.id, sortOrder: category.sortOrder }))
+        }
+      });
+      setMenu(menuFromAdminSnapshot(snapshot));
+      setAdminStatus('Orden de categorías actualizado.');
+    } catch (error) {
+      setAdminStatus(error.message);
+      reloadAdminMenu();
+    }
+  }
+
   function deleteCategory(categoryId) {
     const category = menu.find((item) => item.id === categoryId);
     if (!category || category.items.length > 0) return alert('Solo puedes eliminar categorías sin productos asignados.');
@@ -1040,9 +1298,9 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const targetId = slugify(cleanName);
     const sourceCategoryNow = menu.find((category) => category.id === sourceCategoryId);
     const itemToPersist = sourceCategoryNow?.items.find((item) => item.id === itemId);
-    const targetCategoryNow = menu.find((category) => category.id === targetId || slugify(category.name) === targetId) || createCategory(cleanName);
+    const targetCategoryNow = menu.find((category) => category.id === targetId || slugify(category.name) === targetId) || { ...createCategory(cleanName), sortOrder: menu.length };
     setMenu((current) => {
-      const withCategory = categoryExists(current, cleanName) ? current : [...current, createCategory(cleanName)];
+      const withCategory = categoryExists(current, cleanName) ? current : [...current, { ...createCategory(cleanName), sortOrder: current.length }];
       const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
       const itemToMove = sourceCategory?.items.find((item) => item.id === itemId);
       if (!itemToMove) return withCategory;
@@ -1060,11 +1318,11 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const targetOption = adminCategories.find((category) => category.id === targetCategoryId);
     const sourceCategoryNow = menu.find((category) => category.id === sourceCategoryId);
     const itemToPersist = sourceCategoryNow?.items.find((item) => item.id === itemId);
-    const targetCategoryNow = menu.find((category) => category.id === targetCategoryId) || createCategory(targetOption?.name || targetCategoryId);
+    const targetCategoryNow = menu.find((category) => category.id === targetCategoryId) || { ...createCategory(targetOption?.name || targetCategoryId), sortOrder: menu.length };
     setMenu((current) => {
       const withCategory = current.some((category) => category.id === targetCategoryId)
         ? current
-        : [...current, createCategory(targetOption?.name || targetCategoryId)];
+        : [...current, { ...createCategory(targetOption?.name || targetCategoryId), sortOrder: current.length }];
       const sourceCategory = withCategory.find((category) => category.id === sourceCategoryId);
       const itemToMove = sourceCategory?.items.find((item) => item.id === itemId);
       if (!itemToMove) return withCategory;
@@ -1132,7 +1390,10 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       id: slugify(newProduct.name),
       isSupabaseProduct: false,
       name: newProduct.name.trim(),
-      price: Number(newProduct.price) || 0,
+      cost: null,
+      price: parseOptionalNumber(newProduct.price),
+      discountPrice: null,
+      discountActive: false,
       description: newProduct.description.trim(),
       ingredients: splitCsv(newProduct.ingredients).map((name) => ({ name, removable: true })),
       images: [],
@@ -1142,7 +1403,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const targetName = newProduct.categoryName.trim();
     const selectedCategory = adminCategories.find((category) => category.id === newProduct.categoryId);
     const targetId = targetName ? slugify(targetName) : newProduct.categoryId;
-    const targetCategory = menu.find((category) => category.id === targetId) || createCategory(targetName || selectedCategory?.name || targetId);
+    const targetCategory = menu.find((category) => category.id === targetId) || { ...createCategory(targetName || selectedCategory?.name || targetId), sortOrder: menu.length };
     setMenu((current) => {
       const needsCategory = !current.some((category) => category.id === targetId);
       const withCategory = needsCategory ? [...current, targetCategory] : current;
@@ -1183,6 +1444,14 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
             <input type="password" value={pin} onChange={(event) => setPin(event.target.value)} placeholder="1234" />
           </label>
           <button onClick={login}>Entrar</button>
+          <div className="admin-update-summary">
+            <strong>Resumen de actualización</strong>
+            <ul>
+              <li>Productos cargan cost, ingredient_cost, packaging_cost y discount_price desde Supabase.</li>
+              <li>El campo Costo usa product.cost; 0 o null se muestran vacío.</li>
+              <li>La utilidad se calcula como precio - costo y el margen como utilidad / precio.</li>
+            </ul>
+          </div>
           <p className="small-note">Ojo: este PIN no es seguridad real. Para producción hay que conectar Supabase, Firebase o un backend.</p>
         </div>
       </section>
@@ -1235,6 +1504,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           </label>
           <button type="button" className="button--ghost" onClick={() => persistSettings(business)}>Guardar configuración en Supabase</button>
           <p className="small-note">Fuente actual: {dataSource}. {adminStatus}</p>
+          {isSupabaseConfigured && dataSource !== 'supabase-admin' && <p className="small-note warning-note">Admin esperando datos reales de Supabase; no uses datos locales/cacheados para editar productos.</p>}
         </div>
       </div>
 
@@ -1249,6 +1519,50 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         <p className="small-note">Métricas locales del navegador. Para métricas reales usa Google Analytics, Plausible o backend.</p>
       </div>
 
+
+      <div className="panel admin-full">
+        <div className="admin-header">
+          <div>
+            <p className="eyebrow">Órdenes</p>
+            <h2>Órdenes recientes</h2>
+          </div>
+          <button type="button" className="button--ghost" onClick={loadOrders}>Actualizar órdenes</button>
+        </div>
+        <p className="small-note">{ordersStatus || 'Las órdenes se crean desde Stripe Checkout y se actualizan por webhook.'}</p>
+        <div className="orders-table-wrap">
+          <table className="orders-table">
+            <thead>
+              <tr>
+                <th>Orden</th>
+                <th>Cliente</th>
+                <th>Teléfono</th>
+                <th>Total</th>
+                <th>Pago</th>
+                <th>Estado pago</th>
+                <th>Estado orden</th>
+                <th>Fecha</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.length === 0 ? (
+                <tr><td colSpan="8">Sin órdenes todavía.</td></tr>
+              ) : orders.map((order) => (
+                <tr key={order.id}>
+                  <td>{order.order_number}</td>
+                  <td>{order.customer_name || 'Cliente'}</td>
+                  <td>{order.customer_phone || '—'}</td>
+                  <td>{formatMoney(order.total)}</td>
+                  <td>{paymentLabel(order.payment_method)}</td>
+                  <td>{order.payment_status}</td>
+                  <td>{order.order_status}</td>
+                  <td>{order.created_at ? new Date(order.created_at).toLocaleString('es-MX') : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div className="panel admin-full">
         <div className="admin-header">
           <div>
@@ -1257,10 +1571,14 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           </div>
         </div>
         <div className="category-admin-list">
-          {adminCategories.map((category) => (
+          {adminCategories.map((category, categoryIndex) => (
             <div key={category.id} className="category-admin-row">
+              <div className="category-order-actions">
+                <button type="button" className="button--ghost" onClick={() => moveCategory(category.id, -1)} disabled={categoryIndex === 0}>Subir</button>
+                <button type="button" className="button--ghost" onClick={() => moveCategory(category.id, 1)} disabled={categoryIndex === adminCategories.length - 1}>Bajar</button>
+              </div>
               <span>{category.name}</span>
-              <small>{category.items?.length || 0} productos</small>
+              <small>{category.items?.length || 0} productos · orden {Number(category.sortOrder ?? categoryIndex) + 1}</small>
               <input
                 placeholder="Renombrar categoría"
                 value={renameDrafts[category.id] ?? category.name}
@@ -1290,6 +1608,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
             <button className="button--danger" onClick={resetMenu}>Reset menú</button>
           </div>
         </div>
+
+        <p className="small-note">Fuente de productos en admin: {dataSource === 'supabase-admin' ? 'Supabase' : dataSource}. Usa Recargar Supabase para limpiar caché local y volver a leer la base.</p>
 
         {jsonMode ? (
           <div className="json-editor">
@@ -1324,8 +1644,20 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
                         <input value={item.name} onChange={(event) => updateItem(category.id, item.id, { name: event.target.value })} />
                       </label>
                       <label>
-                        Precio
-                        <input type="number" value={item.price || ''} placeholder="Precio" onChange={(event) => updateItem(category.id, item.id, { price: Number(event.target.value) || 0 })} />
+                        Costo
+                        <input type="number" step="0.01" value={adminNumberInputValue(item.cost)} placeholder="Costo interno" onChange={(event) => updateItem(category.id, item.id, { cost: parseOptionalNumber(event.target.value) })} />
+                      </label>
+                      <label>
+                        Precio normal
+                        <input type="number" step="0.01" value={item.price ?? ''} placeholder="Precio normal" onChange={(event) => updateItem(category.id, item.id, { price: parseOptionalNumber(event.target.value) })} />
+                      </label>
+                      <label>
+                        Precio con descuento
+                        <input type="number" step="0.01" value={item.discountPrice ?? ''} placeholder="Precio descuento" onChange={(event) => updateItem(category.id, item.id, { discountPrice: parseOptionalNumber(event.target.value) })} />
+                      </label>
+                      <label className="checkbox-line admin-discount-toggle">
+                        <input type="checkbox" checked={item.discountActive === true} onChange={(event) => updateItem(category.id, item.id, { discountActive: event.target.checked })} />
+                        Descuento activo
                       </label>
                       <label>
                         Categoría
@@ -1357,6 +1689,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
                         />
                       </div>
                     </div>
+
+                    <ProductProfitSummary item={item} />
 
                     <label>
                       Descripción
@@ -1402,6 +1736,19 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
 }
 
 
+
+function ProductProfitSummary({ item }) {
+  const metrics = productProfitMetrics(item);
+  return (
+    <div className="profit-summary">
+      <div><span>Utilidad normal</span><strong>{metrics.normalProfit === null ? '—' : formatMoney(metrics.normalProfit)}</strong></div>
+      <div><span>Margen normal</span><strong>{formatPercent(metrics.normalMargin)}</strong></div>
+      <div><span>Utilidad con descuento</span><strong>{metrics.discountProfit === null ? '—' : formatMoney(metrics.discountProfit)}</strong></div>
+      <div><span>Margen con descuento</span><strong>{formatPercent(metrics.discountMargin)}</strong></div>
+    </div>
+  );
+}
+
 function ProductImageManager({ item, category, images, adminPin, onSaveProduct, refreshProductImages, productImagesError }) {
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
@@ -1441,8 +1788,8 @@ function ProductImageManager({ item, category, images, adminPin, onSaveProduct, 
           method: 'POST',
           body: formData
         });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || 'No se pudo subir la imagen.');
+        const result = await response.json().catch(() => ({ error: 'La función de subida no respondió JSON.' }));
+        if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo subir la imagen.');
       }
       await refreshProductImages();
       setMessage('Imagen subida a Supabase.');
@@ -1481,8 +1828,8 @@ function ProductImageManager({ item, category, images, adminPin, onSaveProduct, 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminPin, id: image.id, storage_path: image.storage_path })
       });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'No se pudo eliminar la imagen.');
+      const result = await response.json().catch(() => ({ error: 'La función de imágenes no respondió JSON.' }));
+      if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo eliminar la imagen.');
       await refreshProductImages();
       setMessage(result.warning || 'Imagen eliminada.');
     } catch (error) {

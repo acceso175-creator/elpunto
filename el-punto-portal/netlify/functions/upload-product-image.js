@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 const MAX_SIZE_BYTES = 2 * 1024 * 1024;
 const ALLOWED_TYPES = new Map([
   ['image/jpeg', 'jpg'],
@@ -11,6 +13,10 @@ function json(statusCode, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   };
+}
+
+function errorJson(statusCode, message, details = {}) {
+  return json(statusCode, { ok: false, error: message, ...details });
 }
 
 function env(name, fallback = '') {
@@ -29,6 +35,15 @@ function supabaseConfig() {
     serviceRoleKey: env('SUPABASE_SERVICE_ROLE_KEY'),
     bucket: env('SUPABASE_STORAGE_BUCKET', 'product-images')
   };
+}
+
+function missingConfig() {
+  const { url, serviceRoleKey, bucket } = supabaseConfig();
+  return [
+    !url && 'SUPABASE_URL',
+    !serviceRoleKey && 'SUPABASE_SERVICE_ROLE_KEY',
+    !bucket && 'SUPABASE_STORAGE_BUCKET'
+  ].filter(Boolean);
 }
 
 function serviceHeaders(extra = {}) {
@@ -68,6 +83,14 @@ async function supabaseFetch(path, options = {}) {
   return data;
 }
 
+async function ensureStorageBucket() {
+  const { bucket } = supabaseConfig();
+  await supabaseFetch(`/storage/v1/bucket/${encodeURIComponent(bucket)}`, {
+    method: 'GET',
+    headers: serviceHeaders()
+  });
+}
+
 async function ensureProductExists(productId) {
   const [record] = await supabaseFetch(`/rest/v1/products?id=eq.${encodeURIComponent(productId)}&select=id`, {
     method: 'GET',
@@ -77,27 +100,29 @@ async function ensureProductExists(productId) {
 }
 
 async function uploadImage(event) {
-  const { url, serviceRoleKey, bucket } = supabaseConfig();
-  if (!url || !serviceRoleKey) {
-    return json(500, { error: 'Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY en Netlify.' });
+  const { url, bucket } = supabaseConfig();
+  const missing = missingConfig();
+  if (missing.length) {
+    return errorJson(500, `Faltan variables de entorno en Netlify: ${missing.join(', ')}. Revisa que también estén disponibles para Deploy Previews.`);
   }
 
   const formData = await parseMultipart(event);
   if (!validateAdmin(String(formData.get('adminPin') || ''))) {
-    return json(401, { error: 'Admin no autorizado para subir imágenes.' });
+    return errorJson(401, 'Admin no autorizado para subir imágenes.');
   }
 
   const file = formData.get('image');
   const productId = String(formData.get('productId') || '').trim();
-  if (!productId) return json(400, { error: 'Falta productId.' });
-  if (!file || typeof file.arrayBuffer !== 'function') return json(400, { error: 'Falta archivo de imagen.' });
-  if (!ALLOWED_TYPES.has(file.type)) return json(400, { error: 'Solo se aceptan imágenes jpeg, png o webp.' });
-  if (file.size > MAX_SIZE_BYTES) return json(400, { error: 'La imagen excede 2 MB.' });
+  if (!productId) return errorJson(400, 'Falta productId.');
+  if (!file || typeof file.arrayBuffer !== 'function') return errorJson(400, 'Falta archivo de imagen.');
+  if (!ALLOWED_TYPES.has(file.type)) return errorJson(400, 'Solo se aceptan imágenes jpeg, png o webp.');
+  if (file.size > MAX_SIZE_BYTES) return errorJson(400, 'La imagen excede 2 MB.');
 
+  await ensureStorageBucket();
   await ensureProductExists(productId);
 
   const extension = ALLOWED_TYPES.get(file.type);
-  const random = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(16).slice(2);
+  const random = randomUUID();
   const storagePath = `${productId}/${Date.now()}-${random}.${extension}`;
   const bytes = await file.arrayBuffer();
 
@@ -123,6 +148,7 @@ async function uploadImage(event) {
   });
 
   return json(200, {
+    ok: true,
     id: record.id,
     product_id: record.product_id,
     image_url: record.image_url,
@@ -133,14 +159,20 @@ async function uploadImage(event) {
 }
 
 async function deleteImage(event) {
-  const { serviceRoleKey, bucket } = supabaseConfig();
-  if (!serviceRoleKey) return json(500, { error: 'Falta SUPABASE_SERVICE_ROLE_KEY en Netlify.' });
+  const { bucket } = supabaseConfig();
+  const missing = missingConfig();
+  if (missing.length) return errorJson(500, `Faltan variables de entorno en Netlify: ${missing.join(', ')}. Revisa que también estén disponibles para Deploy Previews.`);
 
-  const payload = JSON.parse(event.body || '{}');
-  if (!validateAdmin(String(payload.adminPin || ''))) {
-    return json(401, { error: 'Admin no autorizado para eliminar imágenes.' });
+  let payload = {};
+  try {
+    payload = JSON.parse(event.body || '{}');
+  } catch {
+    return errorJson(400, 'JSON inválido para eliminar imagen.');
   }
-  if (!payload.id || !payload.storage_path) return json(400, { error: 'Faltan id o storage_path.' });
+  if (!validateAdmin(String(payload.adminPin || ''))) {
+    return errorJson(401, 'Admin no autorizado para eliminar imágenes.');
+  }
+  if (!payload.id || !payload.storage_path) return errorJson(400, 'Faltan id o storage_path.');
 
   await supabaseFetch(`/rest/v1/product_images?id=eq.${encodeURIComponent(payload.id)}`, {
     method: 'DELETE',
@@ -163,10 +195,12 @@ async function deleteImage(event) {
 
 export async function handler(event) {
   try {
-    if (event.httpMethod === 'POST') return uploadImage(event);
-    if (event.httpMethod === 'DELETE') return deleteImage(event);
-    return json(405, { error: 'Método no permitido.' });
+    if (event.httpMethod === 'OPTIONS') return json(200, { ok: true });
+    if (event.httpMethod === 'POST') return await uploadImage(event);
+    if (event.httpMethod === 'DELETE') return await deleteImage(event);
+    return errorJson(405, 'Método no permitido.');
   } catch (error) {
-    return json(500, { error: error.message || 'Error inesperado al manejar la imagen.' });
+    console.error('upload-product-image failed:', error);
+    return errorJson(500, error.message || 'Error inesperado al manejar la imagen.');
   }
 }
