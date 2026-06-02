@@ -52,8 +52,10 @@ function mapBusinessSettings(row) {
 }
 
 async function adminRequest(functionName, { method = 'POST', pin, body = {} } = {}) {
-  const response = await fetch(`/.netlify/functions/${functionName}`, {
+  const endpoint = `/.netlify/functions/${functionName}${method === 'GET' ? `?t=${Date.now()}` : ''}`;
+  const response = await fetch(endpoint, {
     method,
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
       ...(pin ? { 'x-admin-pin': pin } : {})
@@ -1127,13 +1129,21 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   async function reloadAdminMenu() {
     if (!isSupabaseConfigured) return;
     try {
+      setDataSource('supabase-loading');
+      setAdminStatus('Cargando productos reales desde Supabase...');
+      localStorage.removeItem(STORAGE.menu);
+      setMenu([]);
       const snapshot = await adminRequest('admin-products', { method: 'GET', pin });
-      setMenu(menuFromAdminSnapshot(snapshot));
+      const nextMenu = menuFromAdminSnapshot(snapshot);
+      setMenu(nextMenu);
       setDataSource('supabase-admin');
-      setAdminStatus('Menú sincronizado con Supabase.');
+      console.info('Admin products source:', 'supabase', { categories: snapshot.categories?.length || 0, products: snapshot.products?.length || 0 });
+      setAdminStatus('Menú sincronizado con Supabase. Fuente: Supabase.');
       await refreshProductImages();
       return snapshot;
     } catch (error) {
+      setDataSource('supabase-error');
+      console.warn('Admin products source:', 'supabase_error', error.message);
       setAdminStatus(error.message);
     }
   }
@@ -1494,6 +1504,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           </label>
           <button type="button" className="button--ghost" onClick={() => persistSettings(business)}>Guardar configuración en Supabase</button>
           <p className="small-note">Fuente actual: {dataSource}. {adminStatus}</p>
+          {isSupabaseConfigured && dataSource !== 'supabase-admin' && <p className="small-note warning-note">Admin esperando datos reales de Supabase; no uses datos locales/cacheados para editar productos.</p>}
         </div>
       </div>
 
@@ -1597,6 +1608,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
             <button className="button--danger" onClick={resetMenu}>Reset menú</button>
           </div>
         </div>
+
+        <p className="small-note">Fuente de productos en admin: {dataSource === 'supabase-admin' ? 'Supabase' : dataSource}. Usa Recargar Supabase para limpiar caché local y volver a leer la base.</p>
 
         {jsonMode ? (
           <div className="json-editor">
@@ -1775,8 +1788,8 @@ function ProductImageManager({ item, category, images, adminPin, onSaveProduct, 
           method: 'POST',
           body: formData
         });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || 'No se pudo subir la imagen.');
+        const result = await response.json().catch(() => ({ error: 'La función de subida no respondió JSON.' }));
+        if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo subir la imagen.');
       }
       await refreshProductImages();
       setMessage('Imagen subida a Supabase.');
@@ -1815,8 +1828,8 @@ function ProductImageManager({ item, category, images, adminPin, onSaveProduct, 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminPin, id: image.id, storage_path: image.storage_path })
       });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'No se pudo eliminar la imagen.');
+      const result = await response.json().catch(() => ({ error: 'La función de imágenes no respondió JSON.' }));
+      if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo eliminar la imagen.');
       await refreshProductImages();
       setMessage(result.warning || 'Imagen eliminada.');
     } catch (error) {
