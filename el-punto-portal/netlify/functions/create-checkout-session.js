@@ -15,9 +15,10 @@ function isNumericPrice(value) {
 }
 
 function effectiveProductPrice(product) {
+  const price = numericPrice(product.price);
   const discountPrice = numericPrice(product.discount_price);
-  if (product.discount_active === true && discountPrice !== null) return discountPrice;
-  return numericPrice(product.price);
+  if (product.discount_active === true && discountPrice !== null && (price === null || discountPrice < price)) return discountPrice;
+  return price;
 }
 
 function optionExtra(selectedOptions = {}) {

@@ -200,7 +200,11 @@ function itemDiscountPrice(item) {
 }
 
 function hasActiveDiscount(item) {
-  return (item?.discountActive === true || item?.discount_active === true) && itemDiscountPrice(item) !== null;
+  const basePrice = itemBasePrice(item);
+  const discountPrice = itemDiscountPrice(item);
+  return (item?.discountActive === true || item?.discount_active === true)
+    && discountPrice !== null
+    && (basePrice === null || discountPrice < basePrice);
 }
 
 function itemNumericPrice(item) {
@@ -1449,7 +1453,9 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
             <ul>
               <li>Productos cargan cost, ingredient_cost, packaging_cost y discount_price desde Supabase.</li>
               <li>El campo Costo usa product.cost; 0 o null se muestran vacío.</li>
-              <li>La utilidad se calcula como precio - costo y el margen como utilidad / precio.</li>
+              <li>El menú público usa precio efectivo: descuento activo válido menor que precio normal; si no, precio normal.</li>
+              <li>Cada producto se edita con estado aislado y se guarda con botón Guardar producto.</li>
+              <li>Ingredientes se agregan con input enfocado, Enter y persistencia al guardar.</li>
             </ul>
           </div>
           <p className="small-note">Ojo: este PIN no es seguridad real. Para producción hay que conectar Supabase, Firebase o un backend.</p>
@@ -1637,94 +1643,18 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <div key={category.id} className="admin-category">
                 <h3>{category.name}</h3>
                 {category.items.map((item) => (
-                  <div key={item.id} className="admin-product-editor">
-                    <div className="admin-product-editor__grid">
-                      <label>
-                        Nombre
-                        <input value={item.name} onChange={(event) => updateItem(category.id, item.id, { name: event.target.value })} />
-                      </label>
-                      <label>
-                        Costo
-                        <input type="number" step="0.01" value={adminNumberInputValue(item.cost)} placeholder="Costo interno" onChange={(event) => updateItem(category.id, item.id, { cost: parseOptionalNumber(event.target.value) })} />
-                      </label>
-                      <label>
-                        Precio normal
-                        <input type="number" step="0.01" value={item.price ?? ''} placeholder="Precio normal" onChange={(event) => updateItem(category.id, item.id, { price: parseOptionalNumber(event.target.value) })} />
-                      </label>
-                      <label>
-                        Precio con descuento
-                        <input type="number" step="0.01" value={item.discountPrice ?? ''} placeholder="Precio descuento" onChange={(event) => updateItem(category.id, item.id, { discountPrice: parseOptionalNumber(event.target.value) })} />
-                      </label>
-                      <label className="checkbox-line admin-discount-toggle">
-                        <input type="checkbox" checked={item.discountActive === true} onChange={(event) => updateItem(category.id, item.id, { discountActive: event.target.checked })} />
-                        Descuento activo
-                      </label>
-                      <label>
-                        Categoría
-                        <select value={category.id} onChange={(event) => moveItem(category.id, item.id, event.target.value)}>
-                          {adminCategories.map((categoryOption) => <option key={categoryOption.id} value={categoryOption.id}>{categoryOption.name}</option>)}
-                        </select>
-                      </label>
-                      <label>
-                        Nueva categoría
-                        <div className="category-move-inline">
-                          <input
-                            value={moveDrafts[item.id] || ''}
-                            onChange={(event) => setMoveDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
-                            placeholder="Ej. Combos"
-                            list="category-options"
-                          />
-                          <button type="button" className="button--ghost" onClick={() => { moveItemToCategoryName(category.id, item.id, moveDrafts[item.id]); setMoveDrafts((current) => ({ ...current, [item.id]: '' })); }}>Mover</button>
-                        </div>
-                      </label>
-                      <div className="admin-image-slot">
-                        <ProductImageManager
-                          item={item}
-                          category={category}
-                          images={productImages[productImageKey(item)] || []}
-                          adminPin={pin}
-                          onSaveProduct={persistProduct}
-                          refreshProductImages={refreshProductImages}
-                          productImagesError={productImagesError}
-                        />
-                      </div>
-                    </div>
-
-                    <ProductProfitSummary item={item} />
-
-                    <label>
-                      Descripción
-                      <textarea value={item.description || ''} onChange={(event) => updateItem(category.id, item.id, { description: event.target.value })} />
-                    </label>
-
-                    <div className="admin-ingredients">
-                      <div className="admin-subheader">
-                        <strong>Ingredientes</strong>
-                        <button type="button" className="button--ghost" onClick={() => addIngredient(category.id, item.id)}>Agregar ingrediente</button>
-                      </div>
-                      {normalizeIngredients(item.ingredients).length === 0 && <p className="small-note">Sin ingredientes capturados.</p>}
-                      {normalizeIngredients(item.ingredients).map((ingredient, ingredientIndex) => (
-                        <div key={`${item.id}-${ingredientIndex}`} className="ingredient-editor">
-                          <label>
-                            Ingrediente
-                            <input value={ingredient.name} onChange={(event) => updateIngredient(category.id, item.id, ingredientIndex, { name: event.target.value })} placeholder="huevo" />
-                          </label>
-                          <label className="checkbox-line">
-                            <input type="checkbox" checked={ingredient.removable} onChange={(event) => updateIngredient(category.id, item.id, ingredientIndex, { removable: event.target.checked })} />
-                            Cliente puede quitarlo
-                          </label>
-                          <button type="button" className="button--danger" onClick={() => deleteIngredient(category.id, item.id, ingredientIndex)}>Eliminar</button>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="admin-product-editor__actions">
-                      <button className={item.available ? 'status status--ok' : 'status status--off'} onClick={() => updateItem(category.id, item.id, { available: !item.available })}>
-                        {item.available ? 'Disponible' : 'Agotado'}
-                      </button>
-                      <button className="button--danger" onClick={() => deleteItem(category.id, item.id)}>Quitar producto</button>
-                    </div>
-                  </div>
+                  <AdminProductEditor
+                    key={productImageKey(item) || item.id}
+                    item={item}
+                    category={category}
+                    adminCategories={adminCategories}
+                    productImages={productImages}
+                    adminPin={pin}
+                    persistProduct={persistProduct}
+                    deleteItem={deleteItem}
+                    refreshProductImages={refreshProductImages}
+                    productImagesError={productImagesError}
+                  />
                 ))}
               </div>
             ))}
@@ -1736,6 +1666,171 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
 }
 
 
+
+function AdminProductEditor({ item, category, adminCategories, productImages, adminPin, persistProduct, deleteItem, refreshProductImages, productImagesError }) {
+  const [draft, setDraft] = useState(() => ({ ...item, categoryId: category.id, newIngredientName: '', newIngredientRemovable: true }));
+  const [saveStatus, setSaveStatus] = useState('');
+  const newIngredientRef = React.useRef(null);
+  const itemKey = productImageKey(item) || item.id;
+
+  useEffect(() => {
+    setDraft((current) => current?.id === item.id
+      ? { ...item, categoryId: current.categoryId || category.id, newIngredientName: current.newIngredientName || '', newIngredientRemovable: current.newIngredientRemovable ?? true }
+      : { ...item, categoryId: category.id, newIngredientName: '', newIngredientRemovable: true });
+  }, [item, category.id]);
+
+  function patchDraft(patch) {
+    setDraft((current) => ({ ...current, ...patch }));
+    setSaveStatus('Cambios sin guardar');
+  }
+
+  function patchIngredient(index, patch) {
+    setDraft((current) => ({
+      ...current,
+      ingredients: normalizeIngredients(current.ingredients).map((ingredient, ingredientIndex) => ingredientIndex === index ? { ...ingredient, ...patch } : ingredient)
+    }));
+    setSaveStatus('Cambios sin guardar');
+  }
+
+  function removeIngredient(index) {
+    setDraft((current) => ({
+      ...current,
+      ingredients: normalizeIngredients(current.ingredients).filter((_, ingredientIndex) => ingredientIndex !== index)
+    }));
+    setSaveStatus('Cambios sin guardar');
+  }
+
+  function addDraftIngredient() {
+    const name = String(draft.newIngredientName || '').trim();
+    if (!name) return;
+    setDraft((current) => ({
+      ...current,
+      ingredients: [...normalizeIngredients(current.ingredients), { name, removable: current.newIngredientRemovable !== false }],
+      newIngredientName: ''
+    }));
+    setSaveStatus('Cambios sin guardar');
+    window.setTimeout(() => newIngredientRef.current?.focus(), 0);
+  }
+
+  function openIngredientInput() {
+    setDraft((current) => ({ ...current, newIngredientName: current.newIngredientName || '', newIngredientRemovable: current.newIngredientRemovable ?? true }));
+    window.setTimeout(() => newIngredientRef.current?.focus(), 0);
+  }
+
+  async function saveProduct() {
+    const targetCategory = adminCategories.find((categoryOption) => categoryOption.id === draft.categoryId) || category;
+    setSaveStatus('Guardando...');
+    try {
+      await persistProduct(targetCategory, { ...draft, ingredients: normalizeIngredients(draft.ingredients) }, 'PATCH');
+      setSaveStatus('Guardado');
+    } catch (error) {
+      setSaveStatus(error.message || 'Error al guardar producto.');
+    }
+  }
+
+  return (
+    <div className="admin-product-editor">
+      <div className="admin-product-editor__grid">
+        <label>
+          Nombre
+          <input value={draft.name || ''} onChange={(event) => patchDraft({ name: event.target.value })} />
+        </label>
+        <label>
+          Costo
+          <input type="number" step="0.01" value={adminNumberInputValue(draft.cost)} placeholder="Costo total interno" onChange={(event) => patchDraft({ cost: parseOptionalNumber(event.target.value) })} />
+        </label>
+        <label>
+          Precio normal
+          <input type="number" step="0.01" value={draft.price ?? ''} placeholder="Precio normal" onChange={(event) => patchDraft({ price: parseOptionalNumber(event.target.value) })} />
+        </label>
+        <label>
+          Precio con descuento
+          <input type="number" step="0.01" value={draft.discountPrice ?? ''} placeholder="Precio descuento" onChange={(event) => patchDraft({ discountPrice: parseOptionalNumber(event.target.value) })} />
+        </label>
+        <label className="checkbox-line admin-discount-toggle">
+          <input type="checkbox" checked={draft.discountActive === true} onChange={(event) => patchDraft({ discountActive: event.target.checked })} />
+          Descuento activo
+        </label>
+        <label>
+          Categoría
+          <select value={draft.categoryId || category.id} onChange={(event) => patchDraft({ categoryId: event.target.value })}>
+            {adminCategories.map((categoryOption) => <option key={categoryOption.id} value={categoryOption.id}>{categoryOption.name}</option>)}
+          </select>
+        </label>
+        <div className="admin-image-slot">
+          <ProductImageManager
+            item={draft}
+            category={category}
+            images={productImages[itemKey] || []}
+            adminPin={adminPin}
+            onSaveProduct={persistProduct}
+            refreshProductImages={refreshProductImages}
+            productImagesError={productImagesError}
+          />
+        </div>
+      </div>
+
+      <ProductProfitSummary item={draft} />
+
+      <label>
+        Descripción
+        <textarea value={draft.description || ''} onChange={(event) => patchDraft({ description: event.target.value })} />
+      </label>
+
+      <div className="admin-ingredients">
+        <div className="admin-subheader">
+          <strong>Ingredientes</strong>
+          <button type="button" className="button--ghost" onClick={openIngredientInput}>Agregar ingrediente</button>
+        </div>
+        {normalizeIngredients(draft.ingredients).length === 0 && <p className="small-note">Sin ingredientes capturados.</p>}
+        {normalizeIngredients(draft.ingredients).map((ingredient, ingredientIndex) => (
+          <div key={`${draft.id}-${ingredientIndex}-${ingredient.name}`} className="ingredient-editor">
+            <label>
+              Ingrediente
+              <input value={ingredient.name} onChange={(event) => patchIngredient(ingredientIndex, { name: event.target.value })} placeholder="huevo" />
+            </label>
+            <label className="checkbox-line">
+              <input type="checkbox" checked={ingredient.removable} onChange={(event) => patchIngredient(ingredientIndex, { removable: event.target.checked })} />
+              Cliente puede quitarlo
+            </label>
+            <button type="button" className="button--danger" onClick={() => removeIngredient(ingredientIndex)}>Eliminar</button>
+          </div>
+        ))}
+        <div className="ingredient-editor ingredient-editor--new">
+          <label>
+            Nuevo ingrediente
+            <input
+              ref={newIngredientRef}
+              value={draft.newIngredientName || ''}
+              onChange={(event) => patchDraft({ newIngredientName: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  addDraftIngredient();
+                }
+              }}
+              placeholder="Escribe ingrediente y Enter"
+            />
+          </label>
+          <label className="checkbox-line">
+            <input type="checkbox" checked={draft.newIngredientRemovable !== false} onChange={(event) => patchDraft({ newIngredientRemovable: event.target.checked })} />
+            Cliente puede quitarlo
+          </label>
+          <button type="button" className="button--ghost" onClick={addDraftIngredient}>Agregar</button>
+        </div>
+      </div>
+
+      <div className="admin-product-editor__actions">
+        <button className={draft.available !== false ? 'status status--ok' : 'status status--off'} onClick={() => patchDraft({ available: draft.available === false })}>
+          {draft.available !== false ? 'Disponible' : 'Agotado'}
+        </button>
+        <button type="button" onClick={saveProduct} disabled={saveStatus === 'Guardando...'}>{saveStatus === 'Guardando...' ? 'Guardando...' : 'Guardar producto'}</button>
+        <button className="button--danger" onClick={() => deleteItem(category.id, item.id)}>Quitar producto</button>
+        {saveStatus && <span className="small-note">{saveStatus}</span>}
+      </div>
+    </div>
+  );
+}
 
 function ProductProfitSummary({ item }) {
   const metrics = productProfitMetrics(item);
