@@ -16,10 +16,21 @@ const STORAGE = {
 };
 
 const ADMIN_PIN = '1234';
-const MAPS_LINK = 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7';
-const BUSINESS_WHATSAPP = '526146087217';
-const BUSINESS_PHONE_DISPLAY = '614 608 7217';
+const BUSINESS_ADDRESS = 'Calle Ojinaga 410, Col. Centro, Chihuahua, Chih., México';
+const BUSINESS_ADDRESS_FOOTER = 'Calle Ojinaga 410, Col. Centro, Chihuahua, Chih.';
+const MAP_QUERY = encodeURIComponent(BUSINESS_ADDRESS);
+const MAP_EMBED_URL = `https://www.google.com/maps?q=${MAP_QUERY}&output=embed`;
+const MAP_OPEN_URL = `https://www.google.com/maps/search/?api=1&query=${MAP_QUERY}`;
+const WHATSAPP_PHONE_RAW = '526145999748';
+const WHATSAPP_PHONE_DISPLAY = '614 599 9748';
+const BUSINESS_WHATSAPP = WHATSAPP_PHONE_RAW;
+const BUSINESS_PHONE_DISPLAY = WHATSAPP_PHONE_DISPLAY;
 const WHATSAPP_GREETING = 'Hola, quiero hacer un pedido en El Punto.';
+const PORTAL_IMAGES = {
+  product: '/images/archivo.jpg',
+  breakfast: '/images/desayuno-destacado.jpg',
+  local: '/images/local.jpg'
+};
 const identity = (value) => value;
 const PAYMENT_METHODS = [
   { value: 'efectivo', label: 'Efectivo' },
@@ -39,7 +50,7 @@ function mapBusinessSettings(row) {
     id: row.id,
     name: row.business_name || businessDefaults.name,
     subtitle: row.subtitle || businessDefaults.subtitle,
-    whatsapp: row.whatsapp_number || businessDefaults.whatsapp,
+    whatsapp: normalizeBusinessWhatsapp(row.whatsapp_number || businessDefaults.whatsapp),
     googleMapsUrl: row.google_maps_url || businessDefaults.googleMapsUrl,
     cryptoBtcWallet: row.crypto_btc_wallet || '',
     cryptoEthWallet: row.crypto_eth_wallet || '',
@@ -269,9 +280,21 @@ function paymentLabel(value) {
   return PAYMENT_METHODS.find((method) => method.value === value)?.label || 'Efectivo';
 }
 
+function normalizeBusinessWhatsapp(value) {
+  const configured = String(value || '').replace(/[^0-9]/g, '');
+  return configured === WHATSAPP_PHONE_RAW ? configured : WHATSAPP_PHONE_RAW;
+}
+
 function businessWhatsappNumber(business) {
-  const configured = String(business?.whatsapp || '').replace(/[^0-9]/g, '');
-  return configured && configured !== '526140000000' ? configured : BUSINESS_WHATSAPP;
+  return normalizeBusinessWhatsapp(business?.whatsapp);
+}
+
+function normalizeBusiness(business) {
+  return {
+    ...businessDefaults,
+    ...(business || {}),
+    whatsapp: normalizeBusinessWhatsapp(business?.whatsapp)
+  };
 }
 
 function openBusinessWhatsApp(business, message = WHATSAPP_GREETING) {
@@ -373,7 +396,7 @@ function createOrderNumber() {
 
 function App() {
   const [menu, setMenu] = usePersistedState(STORAGE.menu, normalizeMenu(initialMenu), normalizeMenu);
-  const [business, setBusiness] = usePersistedState(STORAGE.business, businessDefaults);
+  const [business, setBusiness] = usePersistedState(STORAGE.business, normalizeBusiness(businessDefaults), normalizeBusiness);
   const [cart, setCart] = usePersistedState(STORAGE.cart, []);
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
   const currentPath = window.location.pathname;
@@ -555,18 +578,18 @@ function Header({ navigateTo, business }) {
   );
 }
 
-function ImagePlaceholder({ src, alt, fallback }) {
+function PortalImage({ src, alt }) {
   const [error, setError] = useState(false);
-  if (error) return <div className="image-placeholder">{fallback}</div>;
+  if (error) return <div className="image-placeholder" aria-hidden="true" />;
   return <img src={src} alt={alt} className="home-image" onError={() => setError(true)} />;
 }
 
 function HomeImages() {
   return (
     <section className="section home-gallery">
-      <ImagePlaceholder src="/images/inicio/hero.jpg" alt="Imagen principal" fallback="Imagen del producto" />
-      <ImagePlaceholder src="/images/inicio/desayuno-destacado.jpg" alt="Desayuno destacado" fallback="Desayuno destacado" />
-      <ImagePlaceholder src="/images/inicio/local.jpg" alt="Foto del local" fallback="Foto del local" />
+      <PortalImage src={PORTAL_IMAGES.product} alt="Imagen del producto" />
+      <PortalImage src={PORTAL_IMAGES.breakfast} alt="Desayuno destacado" />
+      <PortalImage src={PORTAL_IMAGES.local} alt="Foto del local" />
     </section>
   );
 }
@@ -595,8 +618,7 @@ function Hero({ navigateTo }) {
 }
 
 
-function LocationSection({ business }) {
-  const mapsLink = business.googleMapsUrl || MAPS_LINK;
+function LocationSection() {
   return (
     <section id="ubicacion" className="section scroll-target">
       <div className="location-card">
@@ -605,13 +627,19 @@ function LocationSection({ business }) {
           <h2>Estamos aquí</h2>
           <p className="location-copy">Pasa por tu pedido o mándanos tu ubicación para entrega.</p>
           <div className="location-actions">
-            <a className="location-link location-link--primary" href={mapsLink} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
+            <a className="location-link location-link--primary" href={MAP_OPEN_URL} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
           </div>
         </div>
-        <div className="map-placeholder" aria-label="Mapa del local">
-          <span className="map-pin" aria-hidden="true">📍</span>
-          <strong>Mapa del local</strong>
-          <p>Espacio preparado para reemplazar después por Google Maps Embed.</p>
+        <div className="map-embed">
+          <iframe
+            title="Mapa de El Punto"
+            src={MAP_EMBED_URL}
+            width="100%"
+            height="100%"
+            style={{ border: 0 }}
+            loading="lazy"
+            referrerPolicy="no-referrer-when-downgrade"
+          />
         </div>
       </div>
     </section>
@@ -673,7 +701,9 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [lightboxZoom, setLightboxZoom] = useState(1);
+  const [productFallbackError, setProductFallbackError] = useState(false);
   const imageUrls = images.map((image) => image.image_url || image.imageUrl).filter(Boolean);
+  const displayImageUrls = imageUrls.length > 0 ? imageUrls : (productFallbackError ? [] : [PORTAL_IMAGES.product]);
   const removableIngredients = removableIngredientNames(item.ingredients);
   const optionList = productOptions(item);
   const [selectedOptions, setSelectedOptions] = useState(() => {
@@ -685,9 +715,9 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   });
 
   useEffect(() => {
-    if (imageIndex >= imageUrls.length) setImageIndex(0);
-    if (lightboxIndex >= imageUrls.length) setLightboxIndex(0);
-  }, [imageIndex, lightboxIndex, imageUrls.length]);
+    if (imageIndex >= displayImageUrls.length) setImageIndex(0);
+    if (lightboxIndex >= displayImageUrls.length) setLightboxIndex(0);
+  }, [imageIndex, lightboxIndex, displayImageUrls.length]);
 
   useEffect(() => {
     if (!lightboxOpen) return undefined;
@@ -695,12 +725,12 @@ function ProductCard({ item, categoryId, addToCart, images }) {
     document.body.style.overflow = 'hidden';
     function handleKeyDown(event) {
       if (event.key === 'Escape') setLightboxOpen(false);
-      if (event.key === 'ArrowLeft' && imageUrls.length > 1) {
-        setLightboxIndex((current) => (current - 1 + imageUrls.length) % imageUrls.length);
+      if (event.key === 'ArrowLeft' && displayImageUrls.length > 1) {
+        setLightboxIndex((current) => (current - 1 + displayImageUrls.length) % displayImageUrls.length);
         setLightboxZoom(1);
       }
-      if (event.key === 'ArrowRight' && imageUrls.length > 1) {
-        setLightboxIndex((current) => (current + 1) % imageUrls.length);
+      if (event.key === 'ArrowRight' && displayImageUrls.length > 1) {
+        setLightboxIndex((current) => (current + 1) % displayImageUrls.length);
         setLightboxZoom(1);
       }
     }
@@ -709,7 +739,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [lightboxOpen, imageUrls.length]);
+  }, [lightboxOpen, displayImageUrls.length]);
 
   const basePrice = itemBasePrice(item);
   const discountPrice = itemDiscountPrice(item);
@@ -724,15 +754,15 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   }
 
   function openImageLightbox(index = imageIndex) {
-    if (!imageUrls.length) return;
+    if (!displayImageUrls.length) return;
     setLightboxIndex(index);
     setLightboxZoom(1);
     setLightboxOpen(true);
   }
 
   function moveLightboxImage(direction) {
-    if (imageUrls.length <= 1) return;
-    setLightboxIndex((current) => (current + direction + imageUrls.length) % imageUrls.length);
+    if (displayImageUrls.length <= 1) return;
+    setLightboxIndex((current) => (current + direction + displayImageUrls.length) % displayImageUrls.length);
     setLightboxZoom(1);
   }
 
@@ -761,21 +791,26 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   return (
     <article className={`product ${!item.available ? 'product--disabled' : ''}`}>
       <div className="product-media">
-        {imageUrls.length > 0 ? (
+        {displayImageUrls.length > 0 ? (
           <>
             <button type="button" className="product-media__open" onClick={() => openImageLightbox(imageIndex)} aria-label={`Ver imagen de ${item.name} en grande`}>
-              <img src={imageUrls[imageIndex]} alt={item.name} className="product-media__image" />
+              <img
+                src={displayImageUrls[imageIndex]}
+                alt={item.name}
+                className="product-media__image"
+                onError={() => { if (!imageUrls.length) setProductFallbackError(true); }}
+              />
             </button>
-            {imageUrls.length > 1 && (
+            {displayImageUrls.length > 1 && (
               <div className="product-media__controls">
-                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex - 1 + imageUrls.length) % imageUrls.length)}>‹</button>
-                <span>{imageIndex + 1}/{imageUrls.length}</span>
-                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex + 1) % imageUrls.length)}>›</button>
+                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex - 1 + displayImageUrls.length) % displayImageUrls.length)}>‹</button>
+                <span>{imageIndex + 1}/{displayImageUrls.length}</span>
+                <button type="button" className="button--ghost" onClick={() => setImageIndex((imageIndex + 1) % displayImageUrls.length)}>›</button>
               </div>
             )}
           </>
         ) : (
-          <div className="product-media__placeholder">Imagen del producto</div>
+          <div className="product-media__placeholder" aria-hidden="true" />
         )}
       </div>
       <div className="product__top">
@@ -841,7 +876,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
         <button disabled={!item.available} onClick={handleAdd}>{item.available ? 'Agregar' : 'Agotado'}</button>
       </div>
 
-      {lightboxOpen && imageUrls.length > 0 && (
+      {lightboxOpen && displayImageUrls.length > 0 && (
         <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={`Imagen de ${item.name}`} onClick={() => setLightboxOpen(false)}>
           <div className="image-lightbox__content" onClick={(event) => event.stopPropagation()}>
             <button type="button" className="image-lightbox__close" onClick={() => setLightboxOpen(false)}>Cerrar ×</button>
@@ -853,22 +888,22 @@ function ProductCard({ item, categoryId, addToCart, images }) {
               }}
             >
               <img
-                src={imageUrls[lightboxIndex]}
+                src={displayImageUrls[lightboxIndex]}
                 alt={`${item.name} ${lightboxIndex + 1}`}
                 style={{ transform: `scale(${lightboxZoom})` }}
               />
             </div>
             <div className="image-lightbox__controls">
-              {imageUrls.length > 1 && <button type="button" className="button--ghost" onClick={() => moveLightboxImage(-1)}>‹ Anterior</button>}
+              {displayImageUrls.length > 1 && <button type="button" className="button--ghost" onClick={() => moveLightboxImage(-1)}>‹ Anterior</button>}
               <button type="button" className="button--ghost" onClick={() => adjustLightboxZoom(-0.2)} disabled={lightboxZoom <= 1}>− Zoom</button>
               <span>{Math.round(lightboxZoom * 100)}%</span>
               <button type="button" className="button--ghost" onClick={() => adjustLightboxZoom(0.2)} disabled={lightboxZoom >= 2.5}>+ Zoom</button>
               <button type="button" className="button--ghost" onClick={() => setLightboxZoom(1)}>Restablecer</button>
-              {imageUrls.length > 1 && <button type="button" className="button--ghost" onClick={() => moveLightboxImage(1)}>Siguiente ›</button>}
+              {displayImageUrls.length > 1 && <button type="button" className="button--ghost" onClick={() => moveLightboxImage(1)}>Siguiente ›</button>}
             </div>
-            {imageUrls.length > 1 && (
+            {displayImageUrls.length > 1 && (
               <div className="image-lightbox__thumbs">
-                {imageUrls.map((url, index) => (
+                {displayImageUrls.map((url, index) => (
                   <button
                     type="button"
                     key={url}
@@ -1105,7 +1140,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
           </div>
         )}
 
-        <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={business.googleMapsUrl || MAPS_LINK} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
+        <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={MAP_OPEN_URL} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
 
         {orderType === 'domicilio' && (
           <div className="delivery-box">
@@ -1573,7 +1608,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <li>Descuento activo se guarda explícitamente como discount_active boolean y se recarga desde Supabase.</li>
               <li>Subida de imágenes usa JSON base64 en lugar de multipart, devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
               <li>Las imágenes del menú público se pueden abrir en visor con zoom, teclado y navegación.</li>
-              <li>Teléfono/WhatsApp del negocio: 614 608 7217 / 526146087217.</li>
+              <li>Se prepararon rutas públicas para producto, desayuno destacado y foto del local; faltan los JPG en la rama si aún no cargan.</li>
+              <li>Teléfono/WhatsApp del negocio: 614 599 9748 / 526145999748.</li>
             </ul>
           </div>
           <p className="small-note">Ojo: este PIN no es seguridad real. Para producción hay que conectar Supabase, Firebase o un backend.</p>
@@ -2152,7 +2188,7 @@ function Footer({ business }) {
     <footer>
       <strong>{business.name}</strong>
       <span>{business.subtitle}</span>
-      <span>{business.address}</span>
+      <span>{BUSINESS_ADDRESS_FOOTER}</span>
       <a href={`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(WHATSAPP_GREETING)}`}>Tel. {BUSINESS_PHONE_DISPLAY}</a>
     </footer>
   );
