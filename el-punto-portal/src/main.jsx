@@ -16,7 +16,11 @@ const STORAGE = {
 };
 
 const ADMIN_PIN = '1234';
-const MAPS_LINK = 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7';
+const BUSINESS_ADDRESS = 'Calle Ojinaga 410, Col. Centro, Chihuahua, Chih., México';
+const BUSINESS_ADDRESS_FOOTER = 'Calle Ojinaga 410, Col. Centro, Chihuahua, Chih.';
+const MAP_QUERY = encodeURIComponent(BUSINESS_ADDRESS);
+const MAP_EMBED_URL = `https://www.google.com/maps?q=${MAP_QUERY}&output=embed`;
+const MAP_OPEN_URL = `https://www.google.com/maps/search/?api=1&query=${MAP_QUERY}`;
 const WHATSAPP_PHONE_RAW = '526145999748';
 const WHATSAPP_PHONE_DISPLAY = '614 599 9748';
 const BUSINESS_WHATSAPP = WHATSAPP_PHONE_RAW;
@@ -574,18 +578,18 @@ function Header({ navigateTo, business }) {
   );
 }
 
-function ImagePlaceholder({ src, alt, fallback }) {
+function PortalImage({ src, alt }) {
   const [error, setError] = useState(false);
-  if (error) return <div className="image-placeholder">{fallback}</div>;
+  if (error) return <div className="image-placeholder" aria-hidden="true" />;
   return <img src={src} alt={alt} className="home-image" onError={() => setError(true)} />;
 }
 
 function HomeImages() {
   return (
     <section className="section home-gallery">
-      <ImagePlaceholder src={PORTAL_IMAGES.product} alt="Imagen principal" fallback="Imagen del producto" />
-      <ImagePlaceholder src={PORTAL_IMAGES.breakfast} alt="Desayuno destacado" fallback="Desayuno destacado" />
-      <ImagePlaceholder src={PORTAL_IMAGES.local} alt="Foto del local" fallback="Foto del local" />
+      <PortalImage src={PORTAL_IMAGES.product} alt="Imagen del producto" />
+      <PortalImage src={PORTAL_IMAGES.breakfast} alt="Desayuno destacado" />
+      <PortalImage src={PORTAL_IMAGES.local} alt="Foto del local" />
     </section>
   );
 }
@@ -614,8 +618,7 @@ function Hero({ navigateTo }) {
 }
 
 
-function LocationSection({ business }) {
-  const mapsLink = business.googleMapsUrl || MAPS_LINK;
+function LocationSection() {
   return (
     <section id="ubicacion" className="section scroll-target">
       <div className="location-card">
@@ -624,13 +627,19 @@ function LocationSection({ business }) {
           <h2>Estamos aquí</h2>
           <p className="location-copy">Pasa por tu pedido o mándanos tu ubicación para entrega.</p>
           <div className="location-actions">
-            <a className="location-link location-link--primary" href={mapsLink} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
+            <a className="location-link location-link--primary" href={MAP_OPEN_URL} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
           </div>
         </div>
-        <div className="map-placeholder" aria-label="Mapa del local">
-          <span className="map-pin" aria-hidden="true">📍</span>
-          <strong>Mapa del local</strong>
-          <p>Espacio preparado para reemplazar después por Google Maps Embed.</p>
+        <div className="map-embed">
+          <iframe
+            title="Mapa de El Punto"
+            src={MAP_EMBED_URL}
+            width="100%"
+            height="100%"
+            style={{ border: 0 }}
+            loading="lazy"
+            referrerPolicy="no-referrer-when-downgrade"
+          />
         </div>
       </div>
     </section>
@@ -801,7 +810,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
             )}
           </>
         ) : (
-          <div className="product-media__placeholder">Imagen del producto</div>
+          <div className="product-media__placeholder" aria-hidden="true" />
         )}
       </div>
       <div className="product__top">
@@ -1131,7 +1140,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
           </div>
         )}
 
-        <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={business.googleMapsUrl || MAPS_LINK} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
+        <p className="small-note">También puedes abrir nuestra ubicación para calcular distancia o recoger en local. <a href={MAP_OPEN_URL} target="_blank" rel="noreferrer">Ver ubicación</a>.</p>
 
         {orderType === 'domicilio' && (
           <div className="delivery-box">
@@ -1599,7 +1608,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <li>Descuento activo se guarda explícitamente como discount_active boolean y se recarga desde Supabase.</li>
               <li>Subida de imágenes usa JSON base64 en lugar de multipart, devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
               <li>Las imágenes del menú público se pueden abrir en visor con zoom, teclado y navegación.</li>
-              <li>Se conectaron las imágenes reales del portal en las tarjetas de producto, desayuno destacado y foto del local.</li>
+              <li>Se prepararon rutas públicas para producto, desayuno destacado y foto del local; faltan los JPG en la rama si aún no cargan.</li>
               <li>Teléfono/WhatsApp del negocio: 614 599 9748 / 526145999748.</li>
             </ul>
           </div>
@@ -2179,7 +2188,7 @@ function Footer({ business }) {
     <footer>
       <strong>{business.name}</strong>
       <span>{business.subtitle}</span>
-      <span>{business.address}</span>
+      <span>{BUSINESS_ADDRESS_FOOTER}</span>
       <a href={`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(WHATSAPP_GREETING)}`}>Tel. {BUSINESS_PHONE_DISPLAY}</a>
     </footer>
   );
