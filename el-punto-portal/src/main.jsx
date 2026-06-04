@@ -301,6 +301,13 @@ function openBusinessWhatsApp(business, message = WHATSAPP_GREETING) {
   window.open(`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(message)}`, '_blank');
 }
 
+function businessSocialLinks(business) {
+  return {
+    ...businessDefaults.socialLinks,
+    ...(business?.socialLinks || {})
+  };
+}
+
 function cryptoWalletsFromBusiness(business) {
   if (Array.isArray(business.cryptoWallets)) return business.cryptoWallets.filter(Boolean);
   return String(business.cryptoWallets || '')
@@ -618,7 +625,7 @@ function Hero({ navigateTo }) {
 }
 
 
-function LocationSection() {
+function LocationSection({ business }) {
   return (
     <section id="ubicacion" className="section scroll-target">
       <div className="location-card">
@@ -629,6 +636,7 @@ function LocationSection() {
           <div className="location-actions">
             <a className="location-link location-link--primary" href={MAP_OPEN_URL} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
           </div>
+          <SocialLinks business={business} className="location-social-links" />
         </div>
         <div className="map-embed">
           <iframe
@@ -2341,6 +2349,22 @@ function FloatingCart({ cartCount, cartTotal, navigateTo }) {
   );
 }
 
+function SocialLinks({ business, className = '' }) {
+  const links = businessSocialLinks(business);
+  return (
+    <div className={`social-links ${className}`} aria-label="Redes sociales de El Punto">
+      <a className="social-link" href={links.facebook} target="_blank" rel="noopener noreferrer" aria-label="Facebook de El Punto">
+        <span aria-hidden="true">f</span>
+        Facebook
+      </a>
+      <a className="social-link" href={links.instagram} target="_blank" rel="noopener noreferrer" aria-label="Instagram de El Punto">
+        <span aria-hidden="true">◎</span>
+        Instagram
+      </a>
+    </div>
+  );
+}
+
 function Footer({ business }) {
   return (
     <footer>
@@ -2348,6 +2372,7 @@ function Footer({ business }) {
       <span>{business.subtitle}</span>
       <span>{BUSINESS_ADDRESS_FOOTER}</span>
       <a href={`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(WHATSAPP_GREETING)}`}>Tel. {BUSINESS_PHONE_DISPLAY}</a>
+      <SocialLinks business={business} className="footer-social-links" />
     </footer>
   );
 }
