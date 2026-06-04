@@ -116,7 +116,7 @@ create policy "Public can read images for available products" on public.product_
 -- No public insert/update/delete policies are created. Admin writes must go through Netlify Functions with SUPABASE_SERVICE_ROLE_KEY.
 
 insert into public.business_settings (business_name, subtitle, whatsapp_number, google_maps_url)
-select 'El Punto', 'Food To Go', '526145999748', 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7'
+select 'El Punto', 'Food To Go', '526146087217', 'https://maps.app.goo.gl/aR9oguMm12B9VBtB7'
 where not exists (select 1 from public.business_settings);
 
 insert into public.categories (name, slug, sort_order, active) values ('Desayunos', 'desayunos', 0, true) on conflict (slug) do update set name = excluded.name, sort_order = excluded.sort_order, active = true;

@@ -1,7 +1,7 @@
 export const businessDefaults = {
   name: 'El Punto',
   subtitle: 'Food To Go',
-  whatsapp: '526145999748',
+  whatsapp: '526146087217',
   googleMapsUrl: 'https://www.google.com/maps/search/?api=1&query=Calle%20Ojinaga%20410%2C%20Col.%20Centro%2C%20Chihuahua%2C%20Chih.%2C%20M%C3%A9xico',
   address: 'Calle Ojinaga 410, Col. Centro, Chihuahua, Chih.',
   cryptoBtcWallet: '',

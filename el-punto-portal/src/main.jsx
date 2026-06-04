@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { businessDefaults, initialMenu } from './menuData.js';
 import { isSupabaseConfigured, listProductImages } from './lib/supabaseClient.js';
@@ -21,8 +21,8 @@ const BUSINESS_ADDRESS_FOOTER = 'Calle Ojinaga 410, Col. Centro, Chihuahua, Chih
 const MAP_QUERY = encodeURIComponent(BUSINESS_ADDRESS);
 const MAP_EMBED_URL = `https://www.google.com/maps?q=${MAP_QUERY}&output=embed`;
 const MAP_OPEN_URL = `https://www.google.com/maps/search/?api=1&query=${MAP_QUERY}`;
-const WHATSAPP_PHONE_RAW = '526145999748';
-const WHATSAPP_PHONE_DISPLAY = '614 599 9748';
+const WHATSAPP_PHONE_RAW = '526146087217';
+const WHATSAPP_PHONE_DISPLAY = '614 608 7217';
 const BUSINESS_WHATSAPP = WHATSAPP_PHONE_RAW;
 const BUSINESS_PHONE_DISPLAY = WHATSAPP_PHONE_DISPLAY;
 const WHATSAPP_GREETING = 'Hola, quiero hacer un pedido en El Punto.';
@@ -700,7 +700,6 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   const [imageIndex, setImageIndex] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
-  const [lightboxZoom, setLightboxZoom] = useState(1);
   const [productFallbackError, setProductFallbackError] = useState(false);
   const imageUrls = images.map((image) => image.image_url || image.imageUrl).filter(Boolean);
   const displayImageUrls = imageUrls.length > 0 ? imageUrls : (productFallbackError ? [] : [PORTAL_IMAGES.product]);
@@ -727,11 +726,9 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       if (event.key === 'Escape') setLightboxOpen(false);
       if (event.key === 'ArrowLeft' && displayImageUrls.length > 1) {
         setLightboxIndex((current) => (current - 1 + displayImageUrls.length) % displayImageUrls.length);
-        setLightboxZoom(1);
       }
       if (event.key === 'ArrowRight' && displayImageUrls.length > 1) {
         setLightboxIndex((current) => (current + 1) % displayImageUrls.length);
-        setLightboxZoom(1);
       }
     }
     window.addEventListener('keydown', handleKeyDown);
@@ -756,18 +753,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   function openImageLightbox(index = imageIndex) {
     if (!displayImageUrls.length) return;
     setLightboxIndex(index);
-    setLightboxZoom(1);
     setLightboxOpen(true);
-  }
-
-  function moveLightboxImage(direction) {
-    if (displayImageUrls.length <= 1) return;
-    setLightboxIndex((current) => (current + direction + displayImageUrls.length) % displayImageUrls.length);
-    setLightboxZoom(1);
-  }
-
-  function adjustLightboxZoom(delta) {
-    setLightboxZoom((current) => Math.min(2.5, Math.max(1, Number((current + delta).toFixed(2)))));
   }
 
   function handleAdd() {
@@ -877,49 +863,221 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       </div>
 
       {lightboxOpen && displayImageUrls.length > 0 && (
-        <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={`Imagen de ${item.name}`} onClick={() => setLightboxOpen(false)}>
-          <div className="image-lightbox__content" onClick={(event) => event.stopPropagation()}>
-            <button type="button" className="image-lightbox__close" onClick={() => setLightboxOpen(false)}>Cerrar ×</button>
-            <div
-              className="image-lightbox__stage"
-              onWheel={(event) => {
-                event.preventDefault();
-                adjustLightboxZoom(event.deltaY < 0 ? 0.12 : -0.12);
-              }}
-            >
-              <img
-                src={displayImageUrls[lightboxIndex]}
-                alt={`${item.name} ${lightboxIndex + 1}`}
-                style={{ transform: `scale(${lightboxZoom})` }}
-              />
-            </div>
-            <div className="image-lightbox__controls">
-              {displayImageUrls.length > 1 && <button type="button" className="button--ghost" onClick={() => moveLightboxImage(-1)}>‹ Anterior</button>}
-              <button type="button" className="button--ghost" onClick={() => adjustLightboxZoom(-0.2)} disabled={lightboxZoom <= 1}>− Zoom</button>
-              <span>{Math.round(lightboxZoom * 100)}%</span>
-              <button type="button" className="button--ghost" onClick={() => adjustLightboxZoom(0.2)} disabled={lightboxZoom >= 2.5}>+ Zoom</button>
-              <button type="button" className="button--ghost" onClick={() => setLightboxZoom(1)}>Restablecer</button>
-              {displayImageUrls.length > 1 && <button type="button" className="button--ghost" onClick={() => moveLightboxImage(1)}>Siguiente ›</button>}
-            </div>
-            {displayImageUrls.length > 1 && (
-              <div className="image-lightbox__thumbs">
-                {displayImageUrls.map((url, index) => (
-                  <button
-                    type="button"
-                    key={url}
-                    className={index === lightboxIndex ? 'active' : ''}
-                    onClick={() => { setLightboxIndex(index); setLightboxZoom(1); }}
-                    aria-label={`Ver imagen ${index + 1} de ${item.name}`}
-                  >
-                    <img src={url} alt="" />
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
+        <ImageLightbox
+          images={displayImageUrls}
+          currentIndex={lightboxIndex}
+          title={item.name}
+          onClose={() => setLightboxOpen(false)}
+          onChangeIndex={setLightboxIndex}
+        />
       )}
     </article>
+  );
+}
+
+const LIGHTBOX_MIN_SCALE = 1;
+const LIGHTBOX_MAX_SCALE = 3;
+const LIGHTBOX_DOUBLE_TAP_SCALE = 2.25;
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getPointerDistance(points) {
+  const [first, second] = points;
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function getPointerCenter(points) {
+  const [first, second] = points;
+  return {
+    x: (first.x + second.x) / 2,
+    y: (first.y + second.y) / 2
+  };
+}
+
+function ImageLightbox({ images, currentIndex, title, onClose, onChangeIndex }) {
+  const [scale, setScale] = useState(LIGHTBOX_MIN_SCALE);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const pointersRef = useRef(new Map());
+  const gestureRef = useRef(null);
+  const lastTapRef = useRef(0);
+  const lastTapPointRef = useRef({ x: 0, y: 0 });
+
+  const imageCount = images.length;
+  const canNavigate = imageCount > 1;
+
+  function resetZoom() {
+    setScale(LIGHTBOX_MIN_SCALE);
+    setOffset({ x: 0, y: 0 });
+    gestureRef.current = null;
+    pointersRef.current.clear();
+  }
+
+  function goToImage(direction) {
+    if (!canNavigate) return;
+    onChangeIndex((current) => (current + direction + imageCount) % imageCount);
+    resetZoom();
+  }
+
+  useEffect(() => {
+    resetZoom();
+  }, [currentIndex]);
+
+  function updatePointer(event) {
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  }
+
+  function handlePointerDown(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    updatePointer(event);
+
+    const points = [...pointersRef.current.values()];
+    if (points.length === 1) {
+      gestureRef.current = {
+        type: 'drag',
+        startX: event.clientX,
+        startY: event.clientY,
+        startOffset: offset,
+        startScale: scale
+      };
+    }
+
+    if (points.length >= 2) {
+      gestureRef.current = {
+        type: 'pinch',
+        startDistance: getPointerDistance(points.slice(0, 2)),
+        startCenter: getPointerCenter(points.slice(0, 2)),
+        startOffset: offset,
+        startScale: scale
+      };
+    }
+  }
+
+  function handlePointerMove(event) {
+    if (!pointersRef.current.has(event.pointerId)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updatePointer(event);
+
+    const gesture = gestureRef.current;
+    const points = [...pointersRef.current.values()];
+    if (!gesture) return;
+
+    if (points.length >= 2 && gesture.type === 'pinch') {
+      const activePoints = points.slice(0, 2);
+      const nextScale = clamp(
+        gesture.startScale * (getPointerDistance(activePoints) / Math.max(gesture.startDistance, 1)),
+        LIGHTBOX_MIN_SCALE,
+        LIGHTBOX_MAX_SCALE
+      );
+      const center = getPointerCenter(activePoints);
+      setScale(nextScale);
+      setOffset(nextScale <= LIGHTBOX_MIN_SCALE ? { x: 0, y: 0 } : {
+        x: gesture.startOffset.x + center.x - gesture.startCenter.x,
+        y: gesture.startOffset.y + center.y - gesture.startCenter.y
+      });
+      return;
+    }
+
+    if (points.length === 1 && gesture.type === 'drag' && scale > LIGHTBOX_MIN_SCALE) {
+      setOffset({
+        x: gesture.startOffset.x + event.clientX - gesture.startX,
+        y: gesture.startOffset.y + event.clientY - gesture.startY
+      });
+    }
+  }
+
+  function handlePointerEnd(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const gesture = gestureRef.current;
+    pointersRef.current.delete(event.pointerId);
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+
+    if (gesture?.type === 'drag') {
+      const movementX = event.clientX - gesture.startX;
+      const movementY = event.clientY - gesture.startY;
+      const moved = Math.hypot(movementX, movementY);
+      const isTap = moved < 10;
+
+      if (isTap) {
+        const now = Date.now();
+        const tapGap = now - lastTapRef.current;
+        const tapDistance = Math.hypot(event.clientX - lastTapPointRef.current.x, event.clientY - lastTapPointRef.current.y);
+        if (tapGap > 0 && tapGap < 320 && tapDistance < 44) {
+          if (scale > LIGHTBOX_MIN_SCALE) {
+            resetZoom();
+          } else {
+            setScale(LIGHTBOX_DOUBLE_TAP_SCALE);
+            setOffset({ x: 0, y: 0 });
+          }
+          lastTapRef.current = 0;
+          return;
+        }
+        lastTapRef.current = now;
+        lastTapPointRef.current = { x: event.clientX, y: event.clientY };
+      }
+
+      if (scale <= LIGHTBOX_MIN_SCALE && canNavigate && Math.abs(movementX) > 64 && Math.abs(movementY) < 90) {
+        goToImage(movementX < 0 ? 1 : -1);
+        return;
+      }
+    }
+
+    if (pointersRef.current.size === 1) {
+      const [remainingPoint] = [...pointersRef.current.values()];
+      gestureRef.current = {
+        type: 'drag',
+        startX: remainingPoint.x,
+        startY: remainingPoint.y,
+        startOffset: offset,
+        startScale: scale
+      };
+    } else {
+      gestureRef.current = null;
+    }
+  }
+
+  function handleWheel(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    setScale((current) => {
+      const nextScale = clamp(current + (event.deltaY < 0 ? 0.16 : -0.16), LIGHTBOX_MIN_SCALE, LIGHTBOX_MAX_SCALE);
+      if (nextScale <= LIGHTBOX_MIN_SCALE) setOffset({ x: 0, y: 0 });
+      return Number(nextScale.toFixed(2));
+    });
+  }
+
+  return (
+    <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={`Imagen de ${title}`} onClick={onClose}>
+      <button type="button" className="image-lightbox__close" onClick={onClose} aria-label="Cerrar imagen">×</button>
+      {canNavigate && <div className="image-lightbox__counter">{currentIndex + 1}/{imageCount}</div>}
+      <div
+        className="image-lightbox__stage"
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        onWheel={handleWheel}
+      >
+        <img
+          src={images[currentIndex]}
+          alt={`${title} ${currentIndex + 1}`}
+          draggable="false"
+          style={{ transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})` }}
+        />
+      </div>
+      {canNavigate && (
+        <>
+          <button type="button" className="image-lightbox__nav image-lightbox__nav--prev" onClick={(event) => { event.stopPropagation(); goToImage(-1); }} aria-label="Imagen anterior">‹</button>
+          <button type="button" className="image-lightbox__nav image-lightbox__nav--next" onClick={(event) => { event.stopPropagation(); goToImage(1); }} aria-label="Imagen siguiente">›</button>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1609,7 +1767,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <li>Subida de imágenes usa JSON base64 en lugar de multipart, devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
               <li>Las imágenes del menú público se pueden abrir en visor con zoom, teclado y navegación.</li>
               <li>Se prepararon rutas públicas para producto, desayuno destacado y foto del local; faltan los JPG en la rama si aún no cargan.</li>
-              <li>Teléfono/WhatsApp del negocio: 614 599 9748 / 526145999748.</li>
+              <li>Se actualizó el número de contacto y WhatsApp del negocio a 614 608 7217.</li>
             </ul>
           </div>
           <p className="small-note">Ojo: este PIN no es seguridad real. Para producción hay que conectar Supabase, Firebase o un backend.</p>
