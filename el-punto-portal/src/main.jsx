@@ -21,8 +21,8 @@ const BUSINESS_ADDRESS_FOOTER = 'Calle Ojinaga 410, Col. Centro, Chihuahua, Chih
 const MAP_QUERY = encodeURIComponent(BUSINESS_ADDRESS);
 const MAP_EMBED_URL = `https://www.google.com/maps?q=${MAP_QUERY}&output=embed`;
 const MAP_OPEN_URL = `https://www.google.com/maps/search/?api=1&query=${MAP_QUERY}`;
-const WHATSAPP_PHONE_RAW = '526145999748';
-const WHATSAPP_PHONE_DISPLAY = '614 599 9748';
+const WHATSAPP_PHONE_RAW = '526146087217';
+const WHATSAPP_PHONE_DISPLAY = '614 608 7217';
 const BUSINESS_WHATSAPP = WHATSAPP_PHONE_RAW;
 const BUSINESS_PHONE_DISPLAY = WHATSAPP_PHONE_DISPLAY;
 const WHATSAPP_GREETING = 'Hola, quiero hacer un pedido en El Punto.';
@@ -299,6 +299,13 @@ function normalizeBusiness(business) {
 
 function openBusinessWhatsApp(business, message = WHATSAPP_GREETING) {
   window.open(`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(message)}`, '_blank');
+}
+
+function businessSocialLinks(business) {
+  return {
+    ...businessDefaults.socialLinks,
+    ...(business?.socialLinks || {})
+  };
 }
 
 function cryptoWalletsFromBusiness(business) {
@@ -618,7 +625,7 @@ function Hero({ navigateTo }) {
 }
 
 
-function LocationSection() {
+function LocationSection({ business }) {
   return (
     <section id="ubicacion" className="section scroll-target">
       <div className="location-card">
@@ -629,6 +636,7 @@ function LocationSection() {
           <div className="location-actions">
             <a className="location-link location-link--primary" href={MAP_OPEN_URL} target="_blank" rel="noreferrer">Abrir en Google Maps</a>
           </div>
+          <SocialLinks business={business} className="location-social-links" />
         </div>
         <div className="map-embed">
           <iframe
@@ -1767,7 +1775,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <li>Subida de imágenes usa JSON base64 en lugar de multipart, devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
               <li>Las imágenes del menú público se pueden abrir en visor con zoom, teclado y navegación.</li>
               <li>Se prepararon rutas públicas para producto, desayuno destacado y foto del local; faltan los JPG en la rama si aún no cargan.</li>
-              <li>Teléfono/WhatsApp del negocio: 614 599 9748 / 526145999748.</li>
+              <li>Se actualizó el número de contacto y WhatsApp del negocio a 614 608 7217.</li>
             </ul>
           </div>
           <p className="small-note">Ojo: este PIN no es seguridad real. Para producción hay que conectar Supabase, Firebase o un backend.</p>
@@ -2341,6 +2349,22 @@ function FloatingCart({ cartCount, cartTotal, navigateTo }) {
   );
 }
 
+function SocialLinks({ business, className = '' }) {
+  const links = businessSocialLinks(business);
+  return (
+    <div className={`social-links ${className}`} aria-label="Redes sociales de El Punto">
+      <a className="social-link" href={links.facebook} target="_blank" rel="noopener noreferrer" aria-label="Facebook de El Punto">
+        <span aria-hidden="true">f</span>
+        Facebook
+      </a>
+      <a className="social-link" href={links.instagram} target="_blank" rel="noopener noreferrer" aria-label="Instagram de El Punto">
+        <span aria-hidden="true">◎</span>
+        Instagram
+      </a>
+    </div>
+  );
+}
+
 function Footer({ business }) {
   return (
     <footer>
@@ -2348,6 +2372,7 @@ function Footer({ business }) {
       <span>{business.subtitle}</span>
       <span>{BUSINESS_ADDRESS_FOOTER}</span>
       <a href={`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(WHATSAPP_GREETING)}`}>Tel. {BUSINESS_PHONE_DISPLAY}</a>
+      <SocialLinks business={business} className="footer-social-links" />
     </footer>
   );
 }
