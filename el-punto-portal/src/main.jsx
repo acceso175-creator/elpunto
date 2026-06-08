@@ -38,6 +38,29 @@ const PAYMENT_METHODS = [
 ];
 const BASE_CATEGORY_NAMES = ['Desayunos', 'Birria', 'Bebidas', 'Postres'];
 
+const PUBLIC_ROUTE_SECTIONS = {
+  '/': 'inicio',
+  '/menu': 'menu',
+  '/club': 'cuenta'
+};
+
+function normalizedPathname() {
+  return window.location.pathname.replace(/\/+$/, '') || '/';
+}
+
+function sectionFromLocation() {
+  const pathname = normalizedPathname();
+  if (pathname === '/' && window.location.hash === '#pedido') return 'pedido';
+  return PUBLIC_ROUTE_SECTIONS[pathname] || 'inicio';
+}
+
+function publicUrlForSection(section) {
+  if (section === 'menu') return '/menu';
+  if (section === 'cuenta') return '/club';
+  if (section === 'pedido') return '/#pedido';
+  return '/';
+}
+
 
 
 function mapBusinessSettings(row) {
@@ -403,11 +426,11 @@ function App() {
   const [business, setBusiness] = usePersistedState(STORAGE.business, normalizeBusiness(businessDefaults), normalizeBusiness);
   const [cart, setCart] = usePersistedState(STORAGE.cart, []);
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
-  const currentPath = window.location.pathname;
+  const currentPath = normalizedPathname();
   const isAdminPath = currentPath === '/admin';
   const isPaymentSuccessPath = currentPath === '/payment-success';
   const isPaymentCancelPath = currentPath === '/payment-cancel';
-  const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : (window.location.hash === '#pedido' ? 'pedido' : 'inicio'));
+  const [activeSection, setActiveSection] = useState(isAdminPath ? 'admin' : sectionFromLocation);
   const [productImages, setProductImages] = useState({});
   const [productImagesError, setProductImagesError] = useState('');
   const [dataSource, setDataSource] = useState(isSupabaseConfigured ? 'loading' : 'local');
@@ -417,10 +440,24 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (window.location.hash === '#pedido') {
-      window.setTimeout(() => document.getElementById('pedido')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+    if (isAdminPath || isPaymentSuccessPath || isPaymentCancelPath) return undefined;
+
+    function syncSectionWithLocation() {
+      setActiveSection(sectionFromLocation());
     }
-  }, []);
+
+    window.addEventListener('popstate', syncSectionWithLocation);
+    return () => window.removeEventListener('popstate', syncSectionWithLocation);
+  }, [isAdminPath, isPaymentSuccessPath, isPaymentCancelPath]);
+
+  useEffect(() => {
+    if (activeSection !== 'menu' && activeSection !== 'pedido' && activeSection !== 'cuenta') return undefined;
+    const sectionIds = { menu: 'menu', pedido: 'pedido', cuenta: 'club-el-punto' };
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(sectionIds[activeSection])?.scrollIntoView({ behavior: 'auto', block: 'start' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSection, dataSource, menu]);
 
   useEffect(() => {
     let cancelled = false;
@@ -493,7 +530,10 @@ function App() {
       pedido: 'pedido',
       cuenta: 'club-el-punto'
     };
-    setActiveSection(section === 'ubicacion' ? 'inicio' : section);
+    const nextSection = section === 'ubicacion' ? 'inicio' : section;
+    const nextUrl = section === 'ubicacion' ? '/#ubicacion' : publicUrlForSection(nextSection);
+    window.history.pushState({}, '', nextUrl);
+    setActiveSection(nextSection);
     window.setTimeout(() => {
       document.getElementById(sectionIds[section] || section)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 50);
@@ -516,7 +556,7 @@ function App() {
 
   return (
     <main>
-      <Header navigateTo={navigateTo} business={business} />
+      <Header navigateTo={navigateTo} />
       <Hero navigateTo={navigateTo} />
       <LocationSection business={business} />
       
@@ -550,7 +590,7 @@ function App() {
 }
 
 
-function Header({ navigateTo, business }) {
+function Header({ navigateTo }) {
   const [logoError, setLogoError] = useState(false);
   const links = [
     ['inicio', 'Inicio'],
@@ -577,7 +617,7 @@ function Header({ navigateTo, business }) {
           <button key={id} className="site-nav__link" onClick={() => handleHeaderNav(id)}>{label}</button>
         ))}
       </nav>
-      <button className="site-header__cta" onClick={() => openBusinessWhatsApp(business)}>Hacer pedido</button>
+      <button className="site-header__cta" onClick={() => navigateTo('menu')}>Hacer pedido</button>
     </header>
   );
 }
