@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { BUSINESS_PHONE_DISPLAY, BUSINESS_WHATSAPP, BUSINESS_WHATSAPP_URL } from './businessConfig.js';
 import { businessDefaults, initialMenu } from './menuData.js';
 import { isSupabaseConfigured, listProductImages } from './lib/supabaseClient.js';
 import { getMenuData, normalizeMenuData } from './services/menuService.js';
@@ -21,10 +22,6 @@ const BUSINESS_ADDRESS_FOOTER = 'Calle Ojinaga 410, Col. Centro, Chihuahua, Chih
 const MAP_QUERY = encodeURIComponent(BUSINESS_ADDRESS);
 const MAP_EMBED_URL = `https://www.google.com/maps?q=${MAP_QUERY}&output=embed`;
 const MAP_OPEN_URL = `https://www.google.com/maps/search/?api=1&query=${MAP_QUERY}`;
-const WHATSAPP_PHONE_RAW = '526146087217';
-const WHATSAPP_PHONE_DISPLAY = '614 608 7217';
-const BUSINESS_WHATSAPP = WHATSAPP_PHONE_RAW;
-const BUSINESS_PHONE_DISPLAY = WHATSAPP_PHONE_DISPLAY;
 const WHATSAPP_GREETING = 'Hola, quiero hacer un pedido en El Punto.';
 const PORTAL_IMAGES = {
   product: '/images/archivo.jpg',
@@ -282,7 +279,7 @@ function paymentLabel(value) {
 
 function normalizeBusinessWhatsapp(value) {
   const configured = String(value || '').replace(/[^0-9]/g, '');
-  return configured === WHATSAPP_PHONE_RAW ? configured : WHATSAPP_PHONE_RAW;
+  return configured === BUSINESS_WHATSAPP ? configured : BUSINESS_WHATSAPP;
 }
 
 function businessWhatsappNumber(business) {
@@ -298,7 +295,7 @@ function normalizeBusiness(business) {
 }
 
 function openBusinessWhatsApp(business, message = WHATSAPP_GREETING) {
-  window.open(`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(message)}`, '_blank');
+  window.open(`${BUSINESS_WHATSAPP_URL}?text=${encodeURIComponent(message)}`, '_blank');
 }
 
 function businessSocialLinks(business) {
@@ -1210,7 +1207,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
       return;
     }
     bumpMetric('orderRequests');
-    window.open(`https://wa.me/${number}?text=${encodeURIComponent(buildMessage())}`, '_blank');
+    window.open(`${BUSINESS_WHATSAPP_URL}?text=${encodeURIComponent(buildMessage())}`, '_blank');
   }
 
   return (
@@ -1345,7 +1342,7 @@ function PaymentResultPage({ type, business }) {
       return;
     }
     const message = `Pago en línea realizado. Favor de confirmar mi pedido.${orderNumber ? `\nNúmero de orden: ${orderNumber}` : ''}`;
-    window.open(`https://wa.me/${number}?text=${encodeURIComponent(message)}`, '_blank');
+    window.open(`${BUSINESS_WHATSAPP_URL}?text=${encodeURIComponent(message)}`, '_blank');
   }
 
   return (
@@ -1775,7 +1772,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <li>Subida de imágenes usa JSON base64 en lugar de multipart, devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
               <li>Las imágenes del menú público se pueden abrir en visor con zoom, teclado y navegación.</li>
               <li>Se prepararon rutas públicas para producto, desayuno destacado y foto del local; faltan los JPG en la rama si aún no cargan.</li>
-              <li>Se actualizó el número de contacto y WhatsApp del negocio a 614 608 7217.</li>
+              <li>Se actualizó el número de contacto y WhatsApp del negocio a {BUSINESS_PHONE_DISPLAY}.</li>
             </ul>
           </div>
           <p className="small-note">Ojo: este PIN no es seguridad real. Para producción hay que conectar Supabase, Firebase o un backend.</p>
@@ -2371,7 +2368,7 @@ function Footer({ business }) {
       <strong>{business.name}</strong>
       <span>{business.subtitle}</span>
       <span>{BUSINESS_ADDRESS_FOOTER}</span>
-      <a href={`https://wa.me/${businessWhatsappNumber(business)}?text=${encodeURIComponent(WHATSAPP_GREETING)}`}>Tel. {BUSINESS_PHONE_DISPLAY}</a>
+      <a href={`${BUSINESS_WHATSAPP_URL}?text=${encodeURIComponent(WHATSAPP_GREETING)}`}>Tel. {BUSINESS_PHONE_DISPLAY}</a>
       <SocialLinks business={business} className="footer-social-links" />
     </footer>
   );

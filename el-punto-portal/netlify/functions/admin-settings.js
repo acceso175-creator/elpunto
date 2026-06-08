@@ -1,10 +1,11 @@
+import { BUSINESS_WHATSAPP } from '../../src/businessConfig.js';
 import { getSupabaseAdmin, json, parseBody, validateAdminPin } from './_supabaseAdmin.js';
 
 function toRow(settings) {
   return {
     business_name: settings.name || settings.business_name || 'El Punto',
     subtitle: settings.subtitle || 'Food To Go',
-    whatsapp_number: settings.whatsapp || settings.whatsapp_number || '',
+    whatsapp_number: BUSINESS_WHATSAPP,
     google_maps_url: settings.googleMapsUrl || settings.google_maps_url || '',
     crypto_btc_wallet: settings.cryptoBtcWallet || settings.crypto_btc_wallet || '',
     crypto_eth_wallet: settings.cryptoEthWallet || settings.crypto_eth_wallet || '',
