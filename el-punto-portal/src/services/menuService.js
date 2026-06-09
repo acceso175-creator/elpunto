@@ -34,6 +34,35 @@ function normalizeIngredient(ingredient, index = 0) {
   };
 }
 
+function normalizeProductOption(option, index = 0) {
+  return {
+    id: option.id,
+    groupId: option.group_id || option.groupId,
+    name: String(option.name || '').trim(),
+    priceDelta: Number(option.price_delta ?? option.priceDelta ?? 0),
+    isActive: option.is_active !== false,
+    sortOrder: Number(option.sort_order ?? option.sortOrder ?? index)
+  };
+}
+
+function normalizeOptionGroup(group, index = 0) {
+  const selectionType = group.selection_type === 'multiple' || group.selectionType === 'multiple' ? 'multiple' : 'single';
+  const required = group.required === true;
+  const minSelect = Math.max(required ? 1 : 0, Number(group.min_select ?? group.minSelect ?? 0));
+  return {
+    id: group.id,
+    productId: group.product_id || group.productId,
+    name: String(group.name || '').trim(),
+    required,
+    selectionType,
+    minSelect,
+    maxSelect: selectionType === 'single' ? 1 : Math.max(1, minSelect, Number(group.max_select ?? group.maxSelect ?? 1) || 1),
+    isActive: group.is_active !== false,
+    sortOrder: Number(group.sort_order ?? group.sortOrder ?? index),
+    options: (group.product_options || group.options || []).map(normalizeProductOption).filter((option) => option.name).sort((a, b) => a.sortOrder - b.sortOrder)
+  };
+}
+
 function normalizeImage(image, index = 0) {
   return {
     id: image.id,
@@ -91,6 +120,7 @@ function productFromRow(row, category, index = 0) {
     badge: row.badge || '',
     sortOrder: Number(row.sort_order ?? index),
     options: Array.isArray(row.options) ? row.options : [],
+    optionGroups: (row.product_option_groups || []).map(normalizeOptionGroup).filter((group) => group.name).sort((a, b) => a.sortOrder - b.sortOrder),
     ingredients: (row.product_ingredients || [])
       .map(normalizeIngredient)
       .filter((ingredient) => ingredient.name)
@@ -143,7 +173,7 @@ export async function getProducts() {
   }
   const { data, error } = await supabase
     .from('products')
-    .select('id, category_id, name, description, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)')
+    .select('id, category_id, name, description, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order), product_option_groups(id, product_id, name, required, selection_type, min_select, max_select, sort_order, is_active, product_options(id, group_id, name, price_delta, is_active, sort_order))')
     .eq('available', true)
     .order('sort_order', { ascending: true });
   if (error) throw new Error(error.message);

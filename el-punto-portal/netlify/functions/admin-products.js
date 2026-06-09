@@ -62,6 +62,35 @@ async function replaceIngredients(supabase, productId, ingredients = []) {
   return data || [];
 }
 
+async function replaceOptionGroups(supabase, productId, groups = []) {
+  const cleanGroups = (Array.isArray(groups) ? groups : []).map((group, index) => {
+    const name = String(group?.name || '').trim();
+    if (!name) throw new Error('No se puede guardar un grupo de opciones sin nombre.');
+    const selectionType = group.selectionType === 'multiple' || group.selection_type === 'multiple' ? 'multiple' : 'single';
+    const required = booleanValue(group.required);
+    const requestedMin = Number(group.minSelect ?? group.min_select ?? 0);
+    const requestedMax = Number(group.maxSelect ?? group.max_select ?? 1);
+    const minSelect = Math.max(required ? 1 : 0, Number.isFinite(requestedMin) ? requestedMin : 0);
+    const maxSelect = selectionType === 'single' ? 1 : Math.max(1, minSelect, Number.isFinite(requestedMax) ? requestedMax : 1);
+    const options = (Array.isArray(group.options) ? group.options : []).map((option, optionIndex) => {
+      const optionName = String(option?.name || '').trim();
+      if (!optionName) throw new Error(`No se puede guardar una opción sin nombre en ${name}.`);
+      return { name: optionName, price_delta: Number(option.priceDelta ?? option.price_delta ?? 0) || 0, is_active: option.isActive !== false && option.is_active !== false, sort_order: Number(option.sortOrder ?? option.sort_order ?? optionIndex) };
+    });
+    return { row: { product_id: productId, name, required, selection_type: selectionType, min_select: minSelect, max_select: maxSelect, sort_order: Number(group.sortOrder ?? group.sort_order ?? index), is_active: group.isActive !== false && group.is_active !== false }, options };
+  });
+  const { error: deleteError } = await supabase.from('product_option_groups').delete().eq('product_id', productId);
+  if (deleteError) throw new Error(deleteError.message);
+  for (const group of cleanGroups) {
+    const { data, error } = await supabase.from('product_option_groups').insert(group.row).select('id').single();
+    if (error) throw new Error(error.message);
+    if (group.options.length) {
+      const { error: optionsError } = await supabase.from('product_options').insert(group.options.map((option) => ({ ...option, group_id: data.id })));
+      if (optionsError) throw new Error(optionsError.message);
+    }
+  }
+}
+
 async function findExistingProduct(supabase, name, categoryId) {
   const { data, error } = await supabase
     .from('products')
@@ -98,6 +127,7 @@ async function upsertProduct(supabase, product, category) {
   }
   if (error) throw new Error(error.message);
   const ingredients = await replaceIngredients(supabase, data.id, product.ingredients);
+  await replaceOptionGroups(supabase, data.id, product.optionGroups);
   return { ...data, product_ingredients: ingredients };
 }
 

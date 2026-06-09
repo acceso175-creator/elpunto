@@ -35,9 +35,22 @@ function effectiveProductPrice(product) {
   return getEffectivePrice(product);
 }
 
-function optionExtra(selectedOptions = {}) {
-  // Backend recalculates the same fixed option surcharge used by the cart UI.
-  return Object.values(selectedOptions).some((value) => String(value).includes('+$25')) ? 25 : 0;
+function validateAndPriceOptions(product, selectedOptions = []) {
+  if (!Array.isArray(selectedOptions)) return Object.values(selectedOptions || {}).some((value) => String(value).includes('+$25')) ? 25 : 0;
+  const selectedIds = new Set(selectedOptions.map((option) => option.optionId).filter(Boolean));
+  let extra = 0;
+  for (const group of product.product_option_groups || []) {
+    if (group.is_active === false) continue;
+    const activeOptions = (group.product_options || []).filter((option) => option.is_active !== false);
+    const selected = activeOptions.filter((option) => selectedIds.has(option.id));
+    const min = Math.max(group.required ? 1 : 0, Number(group.min_select) || 0);
+    const max = group.selection_type === 'single' ? 1 : Math.max(min, Number(group.max_select) || 1);
+    if (selected.length < min || selected.length > max) throw new Error(`Selección inválida para ${group.name}.`);
+    extra += selected.reduce((sum, option) => sum + (Number(option.price_delta) || 0), 0);
+    selected.forEach((option) => selectedIds.delete(option.id));
+  }
+  if (selectedIds.size) throw new Error('Una opción seleccionada ya no está disponible.');
+  return extra;
 }
 
 function createOrderNumber() {
@@ -65,7 +78,7 @@ function cleanCartItem(item) {
 async function loadProducts(supabase, productIds) {
   const { data, error } = await supabase
     .from('products')
-    .select('id, name, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available')
+    .select('id, name, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, product_option_groups(id, name, required, selection_type, min_select, max_select, is_active, product_options(id, name, price_delta, is_active))')
     .in('id', productIds);
   if (error) throw new Error(error.message);
   return new Map((data || []).map((product) => [product.id, product]));
@@ -107,7 +120,7 @@ export async function handler(event) {
       if (!isNumericPrice(effectivePrice)) {
         throw new Error(PRICE_CONFIRMATION_ERROR);
       }
-      const unitPrice = effectivePrice + optionExtra(item.selectedOptions);
+      const unitPrice = effectivePrice + validateAndPriceOptions(product, item.selectedOptions);
       const lineTotal = unitPrice * item.quantity;
       const rawCost = product.cost === null || product.cost === undefined || product.cost === '' ? null : Number(product.cost);
       const cost = Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null;
