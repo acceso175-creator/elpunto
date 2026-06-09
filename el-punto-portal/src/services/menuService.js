@@ -120,6 +120,7 @@ function productFromRow(row, category, index = 0) {
     badge: row.badge || '',
     sortOrder: Number(row.sort_order ?? index),
     options: Array.isArray(row.options) ? row.options : [],
+    optionGroupsLoaded: row.option_groups_loaded !== false,
     optionGroups: (row.product_option_groups || []).map(normalizeOptionGroup).filter((group) => group.name).sort((a, b) => a.sortOrder - b.sortOrder),
     ingredients: (row.product_ingredients || [])
       .map(normalizeIngredient)
@@ -171,13 +172,42 @@ export async function getProducts() {
     localWarning('Faltan VITE_SUPABASE_URL o VITE_SUPABASE_ANON_KEY.');
     return initialMenu.flatMap((category) => category.items.map((item) => ({ ...item, category_id: category.id })));
   }
-  const { data, error } = await supabase
-    .from('products')
-    .select('id, category_id, name, description, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order), product_option_groups(id, product_id, name, required, selection_type, min_select, max_select, sort_order, is_active, product_options(id, group_id, name, price_delta, is_active, sort_order))')
-    .eq('available', true)
-    .order('sort_order', { ascending: true });
+  let { data, error } = await supabase.from('products').select('*').eq('available', true).order('sort_order', { ascending: true });
+  if (error && /column.*available.*does not exist/i.test(error.message || '')) {
+    ({ data, error } = await supabase.from('products').select('*').order('sort_order', { ascending: true }));
+  }
   if (error) throw new Error(error.message);
   return data || [];
+}
+
+async function getPublicProductRelations(products) {
+  const productIds = products.map((product) => product.id).filter(Boolean);
+  if (!productIds.length) return products;
+
+  const [ingredientsResult, imagesResult, groupsResult, optionsResult] = await Promise.all([
+    supabase.from('product_ingredients').select('id, product_id, name, removable, sort_order').in('product_id', productIds),
+    supabase.from('product_images').select('id, product_id, image_url, storage_path, sort_order').in('product_id', productIds),
+    supabase.from('product_option_groups').select('id, product_id, name, required, selection_type, min_select, max_select, sort_order, is_active').in('product_id', productIds).eq('is_active', true),
+    supabase.from('product_options').select('id, group_id, name, price_delta, is_active, sort_order').eq('is_active', true)
+  ]);
+
+  if (ingredientsResult.error) console.warn('[El Punto] No se pudieron cargar ingredientes.', ingredientsResult.error.message);
+  if (imagesResult.error) console.warn('[El Punto] No se pudieron cargar imágenes.', imagesResult.error.message);
+  if (groupsResult.error || optionsResult.error) console.warn('[El Punto] No se pudieron cargar opciones; los productos seguirán disponibles.', groupsResult.error?.message || optionsResult.error?.message);
+
+  const ingredients = ingredientsResult.error ? [] : ingredientsResult.data || [];
+  const images = imagesResult.error ? [] : imagesResult.data || [];
+  const groups = groupsResult.error || optionsResult.error ? [] : groupsResult.data || [];
+  const options = groupsResult.error || optionsResult.error ? [] : optionsResult.data || [];
+  const optionsByGroup = new Map();
+  options.forEach((option) => optionsByGroup.set(option.group_id, [...(optionsByGroup.get(option.group_id) || []), option]));
+
+  return products.map((product) => ({
+    ...product,
+    product_ingredients: ingredients.filter((ingredient) => ingredient.product_id === product.id),
+    product_images: images.filter((image) => image.product_id === product.id),
+    product_option_groups: groups.filter((group) => group.product_id === product.id).map((group) => ({ ...group, product_options: optionsByGroup.get(group.id) || [] }))
+  }));
 }
 
 export async function getProductIngredients(productId) {
@@ -224,13 +254,10 @@ export async function getMenuData() {
   }
   try {
     const [categories, products, business] = await Promise.all([getCategories(), getProducts(), getBusinessSettings()]);
-    if (!products.length) {
-      localWarning('Supabase está configurado, pero todavía no hay productos disponibles en public.products.');
-      return { menu: initialMenu, business, source: 'local', needsMigration: true };
-    }
-    return { menu: menuFromRows(categories, products), business, source: 'supabase' };
+    const productsWithRelations = await getPublicProductRelations(products);
+    return { menu: menuFromRows(categories, productsWithRelations), business, source: 'supabase' };
   } catch (error) {
-    localWarning(error.message);
-    return { menu: initialMenu, business: businessDefaults, source: 'local', error };
+    console.error('[El Punto] No se pudo cargar el menú real desde Supabase.', error.message);
+    return { menu: [], business: businessDefaults, source: 'supabase', error };
   }
 }

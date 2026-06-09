@@ -441,7 +441,8 @@ function createOrderNumber() {
 }
 
 function App() {
-  const [menu, setMenu] = usePersistedState(STORAGE.menu, normalizeMenu(initialMenu), normalizeMenu);
+  const [menu, setMenu] = useState(() => isSupabaseConfigured ? [] : normalizeMenu(readStorage(STORAGE.menu, initialMenu)));
+  useEffect(() => { if (!isSupabaseConfigured) writeStorage(STORAGE.menu, normalizeMenu(menu)); }, [menu]);
   const [business, setBusiness] = usePersistedState(STORAGE.business, normalizeBusiness(businessDefaults), normalizeBusiness);
   const [cart, setCart] = usePersistedState(STORAGE.cart, []);
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
@@ -2152,6 +2153,7 @@ function AdminProductEditor({ item, category, adminCategories, productImages, ad
       price: parseOptionalNumber(draft.price),
       cost: parseOptionalNumber(draft.cost),
       ingredients: normalizeIngredients(draft.ingredients),
+      optionGroupsLoaded: draft.optionGroupsLoaded !== false,
       optionGroups: draft.optionGroups || []
     };
     console.log('Guardando descuento', productToSave.name, {
@@ -2260,7 +2262,7 @@ function AdminProductEditor({ item, category, adminCategories, productImages, ad
         </div>
       </div>
 
-      <ProductOptionsAdmin groups={draft.optionGroups || []} onChange={(optionGroups) => patchDraft({ optionGroups })} />
+      {draft.optionGroupsLoaded === false ? <p className="option-error">No se pudieron cargar las opciones. Recarga Supabase antes de editarlas; el producto puede guardarse sin borrarlas.</p> : <ProductOptionsAdmin groups={draft.optionGroups || []} onChange={(optionGroups) => patchDraft({ optionGroups })} />}
 
       <div className="admin-product-editor__actions">
         <button className={draft.available !== false ? 'status status--ok' : 'status status--off'} onClick={() => patchDraft({ available: draft.available === false })}>

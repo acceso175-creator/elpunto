@@ -76,12 +76,18 @@ function cleanCartItem(item) {
 }
 
 async function loadProducts(supabase, productIds) {
-  const { data, error } = await supabase
-    .from('products')
-    .select('id, name, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, product_option_groups(id, name, required, selection_type, min_select, max_select, is_active, product_options(id, name, price_delta, is_active))')
-    .in('id', productIds);
-  if (error) throw new Error(error.message);
-  return new Map((data || []).map((product) => [product.id, product]));
+  const [{ data: products, error: productsError }, { data: groups, error: groupsError }, { data: options, error: optionsError }] = await Promise.all([
+    supabase.from('products').select('*').in('id', productIds),
+    supabase.from('product_option_groups').select('id, product_id, name, required, selection_type, min_select, max_select, is_active').in('product_id', productIds),
+    supabase.from('product_options').select('id, group_id, name, price_delta, is_active')
+  ]);
+  if (productsError) throw new Error(productsError.message);
+  if (groupsError || optionsError) throw new Error(`No se pudieron validar las opciones del pedido: ${groupsError?.message || optionsError?.message}`);
+  const optionsByGroup = new Map();
+  (options || []).forEach((option) => optionsByGroup.set(option.group_id, [...(optionsByGroup.get(option.group_id) || []), option]));
+  const groupsByProduct = new Map();
+  (groups || []).forEach((group) => groupsByProduct.set(group.product_id, [...(groupsByProduct.get(group.product_id) || []), { ...group, product_options: optionsByGroup.get(group.id) || [] }]));
+  return new Map((products || []).map((product) => [product.id, { ...product, product_option_groups: groupsByProduct.get(product.id) || [] }]));
 }
 
 export async function handler(event) {

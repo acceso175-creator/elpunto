@@ -59,20 +59,38 @@ export async function ensureCategory(supabase, category) {
   return data;
 }
 
-function isOptionsSchemaCacheError(error) {
-  return /options.*schema cache|schema cache.*options|Could not find.*options/i.test(error?.message || '');
+async function loadProductRelations(supabase, products) {
+  const productIds = products.map((product) => product.id).filter(Boolean);
+  if (!productIds.length) return products;
+  const [ingredientsResult, imagesResult, groupsResult, optionsResult] = await Promise.all([
+    supabase.from('product_ingredients').select('id, product_id, name, removable, sort_order').in('product_id', productIds),
+    supabase.from('product_images').select('id, product_id, image_url, storage_path, sort_order').in('product_id', productIds),
+    supabase.from('product_option_groups').select('id, product_id, name, required, selection_type, min_select, max_select, sort_order, is_active').in('product_id', productIds),
+    supabase.from('product_options').select('id, group_id, name, price_delta, is_active, sort_order')
+  ]);
+  if (ingredientsResult.error) console.warn('No se pudieron cargar ingredientes:', ingredientsResult.error.message);
+  if (imagesResult.error) console.warn('No se pudieron cargar imágenes:', imagesResult.error.message);
+  if (groupsResult.error || optionsResult.error) console.warn('No se pudieron cargar opciones:', groupsResult.error?.message || optionsResult.error?.message);
+  const ingredients = ingredientsResult.error ? [] : ingredientsResult.data || [];
+  const images = imagesResult.error ? [] : imagesResult.data || [];
+  const groups = groupsResult.error || optionsResult.error ? [] : groupsResult.data || [];
+  const options = groupsResult.error || optionsResult.error ? [] : optionsResult.data || [];
+  const optionsByGroup = new Map();
+  options.forEach((option) => optionsByGroup.set(option.group_id, [...(optionsByGroup.get(option.group_id) || []), option]));
+  return products.map((product) => ({
+    ...product,
+    product_ingredients: ingredients.filter((ingredient) => ingredient.product_id === product.id),
+    product_images: images.filter((image) => image.product_id === product.id),
+    option_groups_loaded: !groupsResult.error && !optionsResult.error,
+    product_option_groups: groups.filter((group) => group.product_id === product.id).map((group) => ({ ...group, product_options: optionsByGroup.get(group.id) || [] }))
+  }));
 }
 
-async function productsSnapshot(supabase, includeUnavailable, includeOptions = true) {
-  const fields = includeOptions
-    ? 'id, category_id, name, description, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order), product_option_groups(id, product_id, name, required, selection_type, min_select, max_select, sort_order, is_active, product_options(id, group_id, name, price_delta, is_active, sort_order))'
-    : 'id, category_id, name, description, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order), product_option_groups(id, product_id, name, required, selection_type, min_select, max_select, sort_order, is_active, product_options(id, group_id, name, price_delta, is_active, sort_order))';
-  let productQuery = supabase
+async function productsSnapshot(supabase) {
+  return supabase
     .from('products')
-    .select(fields)
+    .select('*')
     .order('sort_order', { ascending: true });
-  if (!includeUnavailable) productQuery = productQuery.eq('available', true);
-  return productQuery;
 }
 
 export async function menuSnapshot(supabase, includeUnavailable = true) {
@@ -82,16 +100,8 @@ export async function menuSnapshot(supabase, includeUnavailable = true) {
     .order('sort_order', { ascending: true })
     .order('name', { ascending: true });
   if (!includeUnavailable) categoryQuery = categoryQuery.eq('active', true);
-
-  const [{ data: categories, error: categoriesError }, productResult] = await Promise.all([
-    categoryQuery,
-    productsSnapshot(supabase, includeUnavailable)
-  ]);
+  const [{ data: categories, error: categoriesError }, { data: products, error: productsError }] = await Promise.all([categoryQuery, productsSnapshot(supabase)]);
   if (categoriesError) throw new Error(categoriesError.message);
-  if (!productResult.error) return { categories: categories || [], products: productResult.data || [] };
-  if (!isOptionsSchemaCacheError(productResult.error)) throw new Error(productResult.error.message);
-
-  const { data: products, error: productsError } = await productsSnapshot(supabase, includeUnavailable, false);
   if (productsError) throw new Error(productsError.message);
-  return { categories: categories || [], products: products || [] };
+  return { categories: categories || [], products: await loadProductRelations(supabase, products || []) };
 }

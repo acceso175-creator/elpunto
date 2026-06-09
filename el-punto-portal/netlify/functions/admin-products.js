@@ -127,7 +127,7 @@ async function upsertProduct(supabase, product, category) {
   }
   if (error) throw new Error(error.message);
   const ingredients = await replaceIngredients(supabase, data.id, product.ingredients);
-  await replaceOptionGroups(supabase, data.id, product.optionGroups);
+  if (product.optionGroupsLoaded !== false && Array.isArray(product.optionGroups)) await replaceOptionGroups(supabase, data.id, product.optionGroups);
   return { ...data, product_ingredients: ingredients };
 }
 
