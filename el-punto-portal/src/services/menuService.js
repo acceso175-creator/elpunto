@@ -1,3 +1,4 @@
+import { BUSINESS_WHATSAPP } from '../businessConfig.js';
 import { businessDefaults, initialMenu } from '../menuData.js';
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient.js';
 
@@ -51,7 +52,7 @@ function normalizeBusinessSettings(row) {
     id: row.id,
     name: row.business_name || businessDefaults.name,
     subtitle: row.subtitle || businessDefaults.subtitle,
-    whatsapp: row.whatsapp_number || businessDefaults.whatsapp,
+    whatsapp: BUSINESS_WHATSAPP,
     googleMapsUrl: row.google_maps_url || businessDefaults.googleMapsUrl,
     cryptoBtcWallet: row.crypto_btc_wallet || '',
     cryptoEthWallet: row.crypto_eth_wallet || '',
