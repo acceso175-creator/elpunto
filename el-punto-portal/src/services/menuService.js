@@ -133,7 +133,15 @@ function productFromRow(row, category, index = 0) {
   };
 }
 
-function menuFromRows(categories, products) {
+function effectiveProductRowPrice(product) {
+  const price = Number(product?.price);
+  const discountPrice = Number(product?.discount_price);
+  const discountActive = product?.discount_active === true || product?.discount_active === 'true' || product?.discount_active === 1;
+  if (discountActive && Number.isFinite(discountPrice) && discountPrice > 0 && Number.isFinite(price) && discountPrice < price) return discountPrice;
+  return Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function menuFromRows(categories, products, sortProductsByPrice = false) {
   return categories.map((category) => ({
     id: category.slug,
     supabaseCategoryId: category.id,
@@ -143,8 +151,16 @@ function menuFromRows(categories, products) {
     active: category.active !== false,
     items: products
       .filter((product) => product.category_id === category.id)
+      .sort((a, b) => {
+        if (!sortProductsByPrice) return Number(a.sort_order || 0) - Number(b.sort_order || 0);
+        const priceA = effectiveProductRowPrice(a);
+        const priceB = effectiveProductRowPrice(b);
+        if (priceA === null && priceB === null) return Number(a.sort_order || 0) - Number(b.sort_order || 0);
+        if (priceA === null) return 1;
+        if (priceB === null) return -1;
+        return priceB - priceA || Number(a.sort_order || 0) - Number(b.sort_order || 0);
+      })
       .map((product, index) => productFromRow(product, category, index))
-      .sort((a, b) => a.sortOrder - b.sortOrder)
   })).sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || String(a.name).localeCompare(String(b.name)));
 }
 
@@ -184,29 +200,33 @@ async function getPublicProductRelations(products) {
   const productIds = products.map((product) => product.id).filter(Boolean);
   if (!productIds.length) return products;
 
-  const [ingredientsResult, imagesResult, groupsResult, optionsResult] = await Promise.all([
+  const [ingredientsResult, imagesResult, groupsResult] = await Promise.all([
     supabase.from('product_ingredients').select('id, product_id, name, removable, sort_order').in('product_id', productIds),
     supabase.from('product_images').select('id, product_id, image_url, storage_path, sort_order').in('product_id', productIds),
-    supabase.from('product_option_groups').select('id, product_id, name, required, selection_type, min_select, max_select, sort_order, is_active').in('product_id', productIds).eq('is_active', true),
-    supabase.from('product_options').select('id, group_id, name, price_delta, is_active, sort_order').eq('is_active', true)
+    supabase.from('product_option_groups').select('id, product_id, name, required, selection_type, min_select, max_select, sort_order, is_active').in('product_id', productIds).eq('is_active', true).order('sort_order', { ascending: true })
   ]);
+  const groups = groupsResult.error ? [] : groupsResult.data || [];
+  const groupIds = groups.map((group) => group.id);
+  const optionsResult = groupIds.length
+    ? await supabase.from('product_options').select('id, group_id, name, price_delta, is_active, sort_order').in('group_id', groupIds).eq('is_active', true).order('sort_order', { ascending: true })
+    : { data: [], error: null };
 
   if (ingredientsResult.error) console.warn('[El Punto] No se pudieron cargar ingredientes.', ingredientsResult.error.message);
   if (imagesResult.error) console.warn('[El Punto] No se pudieron cargar imágenes.', imagesResult.error.message);
   if (groupsResult.error || optionsResult.error) console.warn('[El Punto] No se pudieron cargar opciones; los productos seguirán disponibles.', groupsResult.error?.message || optionsResult.error?.message);
 
-  const ingredients = ingredientsResult.error ? [] : ingredientsResult.data || [];
-  const images = imagesResult.error ? [] : imagesResult.data || [];
-  const groups = groupsResult.error || optionsResult.error ? [] : groupsResult.data || [];
-  const options = groupsResult.error || optionsResult.error ? [] : optionsResult.data || [];
+  const byProduct = (rows) => rows.reduce((map, row) => map.set(row.product_id, [...(map.get(row.product_id) || []), row]), new Map());
+  const ingredientsByProduct = byProduct(ingredientsResult.error ? [] : ingredientsResult.data || []);
+  const imagesByProduct = byProduct(imagesResult.error ? [] : imagesResult.data || []);
+  const groupsByProduct = byProduct(groupsResult.error || optionsResult.error ? [] : groups);
   const optionsByGroup = new Map();
-  options.forEach((option) => optionsByGroup.set(option.group_id, [...(optionsByGroup.get(option.group_id) || []), option]));
+  (groupsResult.error || optionsResult.error ? [] : optionsResult.data || []).forEach((option) => optionsByGroup.set(option.group_id, [...(optionsByGroup.get(option.group_id) || []), option]));
 
   return products.map((product) => ({
     ...product,
-    product_ingredients: ingredients.filter((ingredient) => ingredient.product_id === product.id),
-    product_images: images.filter((image) => image.product_id === product.id),
-    product_option_groups: groups.filter((group) => group.product_id === product.id).map((group) => ({ ...group, product_options: optionsByGroup.get(group.id) || [] }))
+    product_ingredients: ingredientsByProduct.get(product.id) || [],
+    product_images: imagesByProduct.get(product.id) || [],
+    product_option_groups: (groupsByProduct.get(product.id) || []).map((group) => ({ ...group, product_options: optionsByGroup.get(group.id) || [] }))
   }));
 }
 
@@ -255,7 +275,7 @@ export async function getMenuData() {
   try {
     const [categories, products, business] = await Promise.all([getCategories(), getProducts(), getBusinessSettings()]);
     const productsWithRelations = await getPublicProductRelations(products);
-    return { menu: menuFromRows(categories, productsWithRelations), business, source: 'supabase' };
+    return { menu: menuFromRows(categories, productsWithRelations, true), business, source: 'supabase' };
   } catch (error) {
     console.error('[El Punto] No se pudo cargar el menú real desde Supabase.', error.message);
     return { menu: [], business: businessDefaults, source: 'supabase', error };

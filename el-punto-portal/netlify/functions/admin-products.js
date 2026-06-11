@@ -62,6 +62,10 @@ async function replaceIngredients(supabase, productId, ingredients = []) {
   return data || [];
 }
 
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
 async function replaceOptionGroups(supabase, productId, groups = []) {
   const cleanGroups = (Array.isArray(groups) ? groups : []).map((group, index) => {
     const name = String(group?.name || '').trim();
@@ -73,21 +77,45 @@ async function replaceOptionGroups(supabase, productId, groups = []) {
     const minSelect = Math.max(required ? 1 : 0, Number.isFinite(requestedMin) ? requestedMin : 0);
     const maxSelect = selectionType === 'single' ? 1 : Math.max(1, minSelect, Number.isFinite(requestedMax) ? requestedMax : 1);
     const options = (Array.isArray(group.options) ? group.options : []).map((option, optionIndex) => {
-      const optionName = String(option?.name || '').trim();
-      if (!optionName) throw new Error(`No se puede guardar una opción sin nombre en ${name}.`);
-      return { name: optionName, price_delta: Number(option.priceDelta ?? option.price_delta ?? 0) || 0, is_active: option.isActive !== false && option.is_active !== false, sort_order: Number(option.sortOrder ?? option.sort_order ?? optionIndex) };
+      const name = String(option?.name || '').trim();
+      const priceDelta = Number(option.priceDelta ?? option.price_delta ?? 0);
+      if (!name) throw new Error(`No se puede guardar una opción sin nombre en ${group.name || 'el grupo'}.`);
+      if (!Number.isFinite(priceDelta) || priceDelta < 0) throw new Error(`El precio extra de ${name} debe ser cero o positivo.`);
+      return { id: isUuid(option.id) ? option.id : undefined, name, price_delta: priceDelta, is_active: option.isActive !== false && option.is_active !== false, sort_order: Number(option.sortOrder ?? option.sort_order ?? optionIndex) };
     });
-    return { row: { product_id: productId, name, required, selection_type: selectionType, min_select: minSelect, max_select: maxSelect, sort_order: Number(group.sortOrder ?? group.sort_order ?? index), is_active: group.isActive !== false && group.is_active !== false }, options };
+    return { id: isUuid(group.id) ? group.id : undefined, row: { product_id: productId, name, required, selection_type: selectionType, min_select: minSelect, max_select: maxSelect, sort_order: Number(group.sortOrder ?? group.sort_order ?? index), is_active: group.isActive !== false && group.is_active !== false }, options };
   });
-  const { error: deleteError } = await supabase.from('product_option_groups').delete().eq('product_id', productId);
-  if (deleteError) throw new Error(deleteError.message);
+
+  const { data: existingGroups, error: existingGroupsError } = await supabase.from('product_option_groups').select('id').eq('product_id', productId);
+  if (existingGroupsError) throw new Error(existingGroupsError.message);
+  const savedGroupIds = [];
   for (const group of cleanGroups) {
-    const { data, error } = await supabase.from('product_option_groups').insert(group.row).select('id').single();
-    if (error) throw new Error(error.message);
-    if (group.options.length) {
-      const { error: optionsError } = await supabase.from('product_options').insert(group.options.map((option) => ({ ...option, group_id: data.id })));
-      if (optionsError) throw new Error(optionsError.message);
+    const groupPayload = group.id ? { ...group.row, id: group.id } : group.row;
+    const groupWrite = group.id ? supabase.from('product_option_groups').upsert(groupPayload).select('id').single() : supabase.from('product_option_groups').insert(groupPayload).select('id').single();
+    const { data: savedGroup, error: groupError } = await groupWrite;
+    if (groupError) throw new Error(groupError.message);
+    savedGroupIds.push(savedGroup.id);
+
+    const { data: existingOptions, error: existingOptionsError } = await supabase.from('product_options').select('id').eq('group_id', savedGroup.id);
+    if (existingOptionsError) throw new Error(existingOptionsError.message);
+    const savedOptionIds = [];
+    for (const option of group.options) {
+      const optionPayload = { ...option, group_id: savedGroup.id };
+      const optionWrite = option.id ? supabase.from('product_options').upsert(optionPayload).select('id').single() : supabase.from('product_options').insert(optionPayload).select('id').single();
+      const { data: savedOption, error: optionError } = await optionWrite;
+      if (optionError) throw new Error(optionError.message);
+      savedOptionIds.push(savedOption.id);
     }
+    const removedOptionIds = (existingOptions || []).map((option) => option.id).filter((id) => !savedOptionIds.includes(id));
+    if (removedOptionIds.length) {
+      const { error } = await supabase.from('product_options').delete().in('id', removedOptionIds);
+      if (error) throw new Error(error.message);
+    }
+  }
+  const removedGroupIds = (existingGroups || []).map((group) => group.id).filter((id) => !savedGroupIds.includes(id));
+  if (removedGroupIds.length) {
+    const { error } = await supabase.from('product_option_groups').delete().in('id', removedGroupIds);
+    if (error) throw new Error(error.message);
   }
 }
 

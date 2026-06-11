@@ -213,6 +213,7 @@ function activeOptionGroups(product) {
   return (Array.isArray(product?.optionGroups) ? product.optionGroups : [])
     .filter((group) => group.isActive !== false)
     .map((group) => ({ ...group, options: (group.options || []).filter((option) => option.isActive !== false) }))
+    .filter((group) => group.options.length > 0)
     .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
 }
 
@@ -826,7 +827,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
     setOptionError('');
     setSelectedOptionIds((current) => {
       const selected = current[group.id] || [];
-      if (group.selectionType === 'single') return { ...current, [group.id]: [option.id] };
+      if (group.selectionType === 'single') return { ...current, [group.id]: selected.includes(option.id) && !group.required ? [] : [option.id] };
       if (selected.includes(option.id)) return { ...current, [group.id]: selected.filter((id) => id !== option.id) };
       if (selected.length >= group.maxSelect) { setOptionError(`Puedes seleccionar máximo ${group.maxSelect} en ${group.name}.`); return current; }
       return { ...current, [group.id]: [...selected, option.id] };
@@ -2082,7 +2083,7 @@ function ProductOptionsAdmin({ groups, onChange }) {
       </div>
       {(group.options || []).map((option, optionIndex) => <div className="option-editor" key={option.id || optionIndex}>
         <label>Opción<input value={option.name || ''} onChange={(e) => patchOption(groupIndex, optionIndex, { name: e.target.value })} /></label>
-        <label>Precio extra<input type="number" step="0.01" value={option.priceDelta ?? 0} onChange={(e) => patchOption(groupIndex, optionIndex, { priceDelta: Number(e.target.value) || 0 })} /></label>
+        <label>Precio extra<input type="number" step="0.01" value={option.priceDelta ?? 0} min="0" onChange={(e) => patchOption(groupIndex, optionIndex, { priceDelta: Math.max(0, Number(e.target.value) || 0) })} /></label>
         <label>Orden<input type="number" value={option.sortOrder ?? optionIndex} onChange={(e) => patchOption(groupIndex, optionIndex, { sortOrder: Number(e.target.value) })} /></label>
         <label className="checkbox-line"><input type="checkbox" checked={option.isActive !== false} onChange={(e) => patchOption(groupIndex, optionIndex, { isActive: e.target.checked })} />Activa</label>
         <button type="button" className="button--danger" onClick={() => removeOption(groupIndex, optionIndex)}>Eliminar</button>
