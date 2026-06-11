@@ -34,6 +34,35 @@ function normalizeIngredient(ingredient, index = 0) {
   };
 }
 
+function normalizeProductOption(option, index = 0) {
+  return {
+    id: option.id,
+    groupId: option.group_id || option.groupId,
+    name: String(option.name || '').trim(),
+    priceDelta: Number(option.price_delta ?? option.priceDelta ?? 0),
+    isActive: option.is_active !== false,
+    sortOrder: Number(option.sort_order ?? option.sortOrder ?? index)
+  };
+}
+
+function normalizeOptionGroup(group, index = 0) {
+  const selectionType = group.selection_type === 'multiple' || group.selectionType === 'multiple' ? 'multiple' : 'single';
+  const required = group.required === true;
+  const minSelect = Math.max(required ? 1 : 0, Number(group.min_select ?? group.minSelect ?? 0));
+  return {
+    id: group.id,
+    productId: group.product_id || group.productId,
+    name: String(group.name || '').trim(),
+    required,
+    selectionType,
+    minSelect,
+    maxSelect: selectionType === 'single' ? 1 : Math.max(1, minSelect, Number(group.max_select ?? group.maxSelect ?? 1) || 1),
+    isActive: group.is_active !== false,
+    sortOrder: Number(group.sort_order ?? group.sortOrder ?? index),
+    options: (group.product_options || group.options || []).map(normalizeProductOption).filter((option) => option.name).sort((a, b) => a.sortOrder - b.sortOrder)
+  };
+}
+
 function normalizeImage(image, index = 0) {
   return {
     id: image.id,
@@ -91,6 +120,8 @@ function productFromRow(row, category, index = 0) {
     badge: row.badge || '',
     sortOrder: Number(row.sort_order ?? index),
     options: Array.isArray(row.options) ? row.options : [],
+    optionGroupsLoaded: row.option_groups_loaded !== false,
+    optionGroups: (row.product_option_groups || []).map(normalizeOptionGroup).filter((group) => group.name).sort((a, b) => a.sortOrder - b.sortOrder),
     ingredients: (row.product_ingredients || [])
       .map(normalizeIngredient)
       .filter((ingredient) => ingredient.name)
@@ -102,7 +133,15 @@ function productFromRow(row, category, index = 0) {
   };
 }
 
-function menuFromRows(categories, products) {
+function effectiveProductRowPrice(product) {
+  const price = Number(product?.price);
+  const discountPrice = Number(product?.discount_price);
+  const discountActive = product?.discount_active === true || product?.discount_active === 'true' || product?.discount_active === 1;
+  if (discountActive && Number.isFinite(discountPrice) && discountPrice > 0 && Number.isFinite(price) && discountPrice < price) return discountPrice;
+  return Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function menuFromRows(categories, products, sortProductsByPrice = false) {
   return categories.map((category) => ({
     id: category.slug,
     supabaseCategoryId: category.id,
@@ -112,8 +151,16 @@ function menuFromRows(categories, products) {
     active: category.active !== false,
     items: products
       .filter((product) => product.category_id === category.id)
+      .sort((a, b) => {
+        if (!sortProductsByPrice) return Number(a.sort_order || 0) - Number(b.sort_order || 0);
+        const priceA = effectiveProductRowPrice(a);
+        const priceB = effectiveProductRowPrice(b);
+        if (priceA === null && priceB === null) return Number(a.sort_order || 0) - Number(b.sort_order || 0);
+        if (priceA === null) return 1;
+        if (priceB === null) return -1;
+        return priceB - priceA || Number(a.sort_order || 0) - Number(b.sort_order || 0);
+      })
       .map((product, index) => productFromRow(product, category, index))
-      .sort((a, b) => a.sortOrder - b.sortOrder)
   })).sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || String(a.name).localeCompare(String(b.name)));
 }
 
@@ -141,13 +188,73 @@ export async function getProducts() {
     localWarning('Faltan VITE_SUPABASE_URL o VITE_SUPABASE_ANON_KEY.');
     return initialMenu.flatMap((category) => category.items.map((item) => ({ ...item, category_id: category.id })));
   }
-  const { data, error } = await supabase
-    .from('products')
-    .select('id, category_id, name, description, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available, favorite, badge, sort_order, options, product_ingredients(id, name, removable, sort_order), product_images(id, image_url, storage_path, sort_order)')
-    .eq('available', true)
-    .order('sort_order', { ascending: true });
+  let { data, error } = await supabase.from('products').select('*').eq('available', true).order('sort_order', { ascending: true });
+  if (error && /column.*available.*does not exist/i.test(error.message || '')) {
+    ({ data, error } = await supabase.from('products').select('*').order('sort_order', { ascending: true }));
+  }
   if (error) throw new Error(error.message);
   return data || [];
+}
+
+async function loadPublicOptionsFallback(productIds) {
+  const response = await fetch(`/.netlify/functions/public-product-options?productIds=${encodeURIComponent(productIds.join(','))}`, { cache: 'no-store' });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'No se pudieron cargar las opciones públicas.');
+  return { groups: result.groups || [], options: result.options || [] };
+}
+
+async function getPublicProductRelations(products) {
+  const productIds = products.map((product) => product.id).filter(Boolean);
+  if (!productIds.length) return products;
+  console.log('MENU products', products);
+
+  const [ingredientsResult, imagesResult, groupsResult] = await Promise.all([
+    supabase.from('product_ingredients').select('id, product_id, name, removable, sort_order').in('product_id', productIds),
+    supabase.from('product_images').select('id, product_id, image_url, storage_path, sort_order').in('product_id', productIds),
+    supabase.from('product_option_groups').select('id, product_id, name, required, selection_type, min_select, max_select, sort_order, is_active').in('product_id', productIds).eq('is_active', true).order('sort_order', { ascending: true })
+  ]);
+  let groups = groupsResult.error ? [] : groupsResult.data || [];
+  let groupIds = groups.map((group) => group.id);
+  let optionsResult = groupIds.length
+    ? await supabase.from('product_options').select('id, group_id, name, price_delta, is_active, sort_order').in('group_id', groupIds).eq('is_active', true).order('sort_order', { ascending: true })
+    : { data: [], error: null };
+  let options = optionsResult.error ? [] : optionsResult.data || [];
+
+  const logSupabaseError = (table, error) => console.error(`[El Punto] Error cargando ${table}`, { message: error?.message, code: error?.code, details: error?.details, hint: error?.hint });
+  if (ingredientsResult.error) logSupabaseError('product_ingredients', ingredientsResult.error);
+  if (imagesResult.error) logSupabaseError('product_images', imagesResult.error);
+  if (groupsResult.error) logSupabaseError('product_option_groups', groupsResult.error);
+  if (optionsResult.error) logSupabaseError('product_options', optionsResult.error);
+  console.log('MENU option groups', groups);
+  console.log('MENU options', options);
+
+  try {
+    // Admin writes use the service role. This active-only endpoint guarantees that public options
+    // remain visible even when the deployed anon RLS policies have not been refreshed yet.
+    const fallback = await loadPublicOptionsFallback(productIds);
+    groups = fallback.groups;
+    options = fallback.options;
+    console.log('MENU option groups (Netlify active-only)', groups);
+    console.log('MENU options (Netlify active-only)', options);
+  } catch (error) {
+    console.error('[El Punto] Error en respaldo público de opciones', { message: error.message });
+  }
+
+  const byProduct = (rows) => rows.reduce((map, row) => map.set(String(row.product_id), [...(map.get(String(row.product_id)) || []), row]), new Map());
+  const ingredientsByProduct = byProduct(ingredientsResult.error ? [] : ingredientsResult.data || []);
+  const imagesByProduct = byProduct(imagesResult.error ? [] : imagesResult.data || []);
+  const groupsByProduct = byProduct(groups);
+  const optionsByGroup = new Map();
+  options.forEach((option) => optionsByGroup.set(String(option.group_id), [...(optionsByGroup.get(String(option.group_id)) || []), option]));
+
+  const productsWithOptions = products.map((product) => ({
+    ...product,
+    product_ingredients: ingredientsByProduct.get(String(product.id)) || [],
+    product_images: imagesByProduct.get(String(product.id)) || [],
+    product_option_groups: (groupsByProduct.get(String(product.id)) || []).map((group) => ({ ...group, product_options: optionsByGroup.get(String(group.id)) || [] }))
+  }));
+  console.log('MENU products with option groups', productsWithOptions);
+  return productsWithOptions;
 }
 
 export async function getProductIngredients(productId) {
@@ -194,13 +301,10 @@ export async function getMenuData() {
   }
   try {
     const [categories, products, business] = await Promise.all([getCategories(), getProducts(), getBusinessSettings()]);
-    if (!products.length) {
-      localWarning('Supabase está configurado, pero todavía no hay productos disponibles en public.products.');
-      return { menu: initialMenu, business, source: 'local', needsMigration: true };
-    }
-    return { menu: menuFromRows(categories, products), business, source: 'supabase' };
+    const productsWithRelations = await getPublicProductRelations(products);
+    return { menu: menuFromRows(categories, productsWithRelations, true), business, source: 'supabase' };
   } catch (error) {
-    localWarning(error.message);
-    return { menu: initialMenu, business: businessDefaults, source: 'local', error };
+    console.error('[El Punto] No se pudo cargar el menú real desde Supabase.', error.message);
+    return { menu: [], business: businessDefaults, source: 'supabase', error };
   }
 }

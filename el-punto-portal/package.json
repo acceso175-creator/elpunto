@@ -13,7 +13,6 @@
     "@vitejs/plugin-react": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "vite": "latest",
-    "stripe": "^20.4.0"
+    "vite": "latest"
   }
 }

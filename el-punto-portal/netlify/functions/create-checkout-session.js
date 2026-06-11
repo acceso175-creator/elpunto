@@ -1,4 +1,3 @@
-import Stripe from 'stripe';
 import { getSupabaseAdmin, json, parseBody } from './_supabaseAdmin.js';
 
 const PRICE_CONFIRMATION_ERROR = 'Este pedido requiere confirmación de precio por WhatsApp antes de pagar.';
@@ -35,9 +34,47 @@ function effectiveProductPrice(product) {
   return getEffectivePrice(product);
 }
 
-function optionExtra(selectedOptions = {}) {
-  // Backend recalculates the same fixed option surcharge used by the cart UI.
-  return Object.values(selectedOptions).some((value) => String(value).includes('+$25')) ? 25 : 0;
+function validateAndPriceOptions(product, selectedOptions = []) {
+  if (!Array.isArray(selectedOptions)) return Object.values(selectedOptions || {}).some((value) => String(value).includes('+$25')) ? 25 : 0;
+  const selectedIds = new Set(selectedOptions.map((option) => option.optionId).filter(Boolean));
+  let extra = 0;
+  for (const group of product.product_option_groups || []) {
+    if (group.is_active === false) continue;
+    const activeOptions = (group.product_options || []).filter((option) => option.is_active !== false);
+    if (!activeOptions.length) continue;
+    const selected = activeOptions.filter((option) => selectedIds.has(option.id));
+    const min = Math.max(group.required ? 1 : 0, Number(group.min_select) || 0);
+    const max = group.selection_type === 'single' ? 1 : Math.max(min, Number(group.max_select) || 1);
+    if (selected.length < min || selected.length > max) throw new Error(`Selección inválida para ${group.name}.`);
+    extra += selected.reduce((sum, option) => sum + (Number(option.price_delta) || 0), 0);
+    selected.forEach((option) => selectedIds.delete(option.id));
+  }
+  if (selectedIds.size) throw new Error('Una opción seleccionada ya no está disponible.');
+  return extra;
+}
+
+async function createStripeCheckoutSession(secretKey, payload) {
+  const params = new URLSearchParams();
+  params.set('mode', payload.mode);
+  params.set('success_url', payload.success_url);
+  params.set('cancel_url', payload.cancel_url);
+  params.set('client_reference_id', payload.client_reference_id);
+  Object.entries(payload.metadata).forEach(([key, value]) => params.set(`metadata[${key}]`, value));
+  Object.entries(payload.payment_intent_data.metadata).forEach(([key, value]) => params.set(`payment_intent_data[metadata][${key}]`, value));
+  payload.line_items.forEach((item, index) => {
+    params.set(`line_items[${index}][quantity]`, String(item.quantity));
+    params.set(`line_items[${index}][price_data][currency]`, item.price_data.currency);
+    params.set(`line_items[${index}][price_data][unit_amount]`, String(item.price_data.unit_amount));
+    params.set(`line_items[${index}][price_data][product_data][name]`, item.price_data.product_data.name);
+  });
+  const response = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params
+  });
+  const session = await response.json();
+  if (!response.ok) throw new Error(session?.error?.message || 'Stripe no pudo crear la sesión de pago.');
+  return session;
 }
 
 function createOrderNumber() {
@@ -63,12 +100,20 @@ function cleanCartItem(item) {
 }
 
 async function loadProducts(supabase, productIds) {
-  const { data, error } = await supabase
-    .from('products')
-    .select('id, name, price, cost, ingredient_cost, packaging_cost, discount_price, discount_active, price_label, available')
-    .in('id', productIds);
-  if (error) throw new Error(error.message);
-  return new Map((data || []).map((product) => [product.id, product]));
+  const [{ data: products, error: productsError }, groupsResult] = await Promise.all([
+    supabase.from('products').select('*').in('id', productIds),
+    supabase.from('product_option_groups').select('id, product_id, name, required, selection_type, min_select, max_select, is_active').in('product_id', productIds)
+  ]);
+  if (productsError) throw new Error(productsError.message);
+  const groups = groupsResult.error ? [] : groupsResult.data || [];
+  const groupIds = groups.map((group) => group.id);
+  const optionsResult = groupIds.length ? await supabase.from('product_options').select('id, group_id, name, price_delta, is_active').in('group_id', groupIds) : { data: [], error: null };
+  const optionsAvailable = !groupsResult.error && !optionsResult.error;
+  const optionsByGroup = new Map();
+  (optionsAvailable ? optionsResult.data || [] : []).forEach((option) => optionsByGroup.set(option.group_id, [...(optionsByGroup.get(option.group_id) || []), option]));
+  const groupsByProduct = new Map();
+  (optionsAvailable ? groups : []).forEach((group) => groupsByProduct.set(group.product_id, [...(groupsByProduct.get(group.product_id) || []), { ...group, product_options: optionsByGroup.get(group.id) || [] }]));
+  return new Map((products || []).map((product) => [product.id, { ...product, product_options_available: optionsAvailable, product_option_groups: groupsByProduct.get(product.id) || [] }]));
 }
 
 export async function handler(event) {
@@ -103,11 +148,12 @@ export async function handler(event) {
       if (!product || product.available === false) {
         throw new Error('Uno o más productos ya no están disponibles. Actualiza tu carrito e intenta de nuevo.');
       }
+      if (product.product_options_available === false && Array.isArray(item.selectedOptions) && item.selectedOptions.length) throw new Error('No se pudieron validar las opciones seleccionadas. Intenta nuevamente.');
       const effectivePrice = effectiveProductPrice(product);
       if (!isNumericPrice(effectivePrice)) {
         throw new Error(PRICE_CONFIRMATION_ERROR);
       }
-      const unitPrice = effectivePrice + optionExtra(item.selectedOptions);
+      const unitPrice = effectivePrice + validateAndPriceOptions(product, item.selectedOptions);
       const lineTotal = unitPrice * item.quantity;
       const rawCost = product.cost === null || product.cost === undefined || product.cost === '' ? null : Number(product.cost);
       const cost = Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null;
@@ -160,8 +206,7 @@ export async function handler(event) {
 
     // Security: STRIPE_SECRET_KEY is used only in Netlify Functions; never expose it to React.
     // Security: prices are recalculated from Supabase with the service role; the frontend cart is not the source of truth.
-    const stripe = new Stripe(stripeSecretKey);
-    const session = await stripe.checkout.sessions.create({
+    const session = await createStripeCheckoutSession(stripeSecretKey, {
       mode: 'payment',
       success_url: `${successUrl}${successUrl.includes('?') ? '&' : '?'}order_id=${order.id}&order_number=${encodeURIComponent(order.order_number)}`,
       cancel_url: `${cancelUrl}${cancelUrl.includes('?') ? '&' : '?'}order_id=${order.id}`,

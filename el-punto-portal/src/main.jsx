@@ -86,7 +86,8 @@ function mapBusinessSettings(row) {
 }
 
 async function adminRequest(functionName, { method = 'POST', pin, body = {} } = {}) {
-  const endpoint = `/.netlify/functions/${functionName}${method === 'GET' ? `?t=${Date.now()}` : ''}`;
+  const query = method === 'GET' ? new URLSearchParams({ t: String(Date.now()), ...Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined && value !== null).map(([key, value]) => [key, String(value)])) }) : null;
+  const endpoint = `/.netlify/functions/${functionName}${query ? `?${query}` : ''}`;
   const response = await fetch(endpoint, {
     method,
     cache: 'no-store',
@@ -97,7 +98,12 @@ async function adminRequest(functionName, { method = 'POST', pin, body = {} } = 
     body: method === 'GET' ? undefined : JSON.stringify({ adminPin: pin, ...body })
   });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || 'Error en función de Netlify.');
+  if (!response.ok) {
+    const details = result.supabaseError;
+    const message = details ? [details.message, details.code && `Código: ${details.code}`, details.details && `Detalles: ${details.details}`, details.hint && `Sugerencia: ${details.hint}`].filter(Boolean).join(' · ') : result.error || 'Error en función de Netlify.';
+    console.error(`[${functionName}]`, result);
+    throw new Error(message);
+  }
   return result;
 }
 
@@ -193,7 +199,8 @@ function normalizeMenu(menu) {
       isSupabaseProduct: item.isSupabaseProduct === true,
       supabaseProductId: item.isSupabaseProduct === true && isUuid(item.supabaseProductId || item.id) ? (item.supabaseProductId || item.id) : undefined,
       images: Array.isArray(item.images) ? item.images.filter((image) => typeof image === 'string' && !image.startsWith('data:')) : [],
-      ingredients: normalizeIngredients(item.ingredients)
+      ingredients: normalizeIngredients(item.ingredients),
+      optionGroups: Array.isArray(item.optionGroups) ? item.optionGroups : []
     }))
   })).sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0) || String(a.name).localeCompare(String(b.name)));
 }
@@ -206,6 +213,42 @@ function removableIngredientNames(ingredients) {
 
 function productOptions(product) {
   return Array.isArray(product?.options) ? product.options : [];
+}
+
+function activeOptionGroups(product) {
+  return (Array.isArray(product?.optionGroups) ? product.optionGroups : [])
+    .filter((group) => group.isActive !== false)
+    .map((group) => ({ ...group, options: (group.options || []).filter((option) => option.isActive !== false) }))
+    .filter((group) => group.options.length > 0)
+    .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
+}
+
+function optionGroupInstruction(group) {
+  const minSelect = Math.max(group.required ? 1 : 0, Number(group.minSelect) || 0);
+  const maxSelect = Math.max(1, Number(group.maxSelect) || 1);
+  if (group.selectionType === 'single') return group.required ? 'Elige 1 opción' : 'Elige 1 opción (opcional)';
+  if (group.required && minSelect > 0) {
+    if (maxSelect > minSelect) return `Elige de ${minSelect} a ${maxSelect} opciones`;
+    return `Elige ${minSelect} ${minSelect === 1 ? 'opción' : 'opciones'}`;
+  }
+  return `Elige hasta ${maxSelect} ${maxSelect === 1 ? 'opción' : 'opciones'}`;
+}
+
+function requiredOptionError(group) {
+  const minSelect = Math.max(1, Number(group.minSelect) || 1);
+  return minSelect === 1 ? `Selecciona una opción de ${group.name}.` : `Selecciona al menos ${minSelect} opciones de ${group.name}.`;
+}
+
+function selectedOptionExtra(selectedOptions) {
+  if (!Array.isArray(selectedOptions)) return Object.values(selectedOptions || {}).some((value) => String(value).includes('+$25')) ? 25 : 0;
+  return selectedOptions.reduce((sum, selection) => sum + (Number(selection.priceDelta) || 0), 0);
+}
+
+function selectedOptionsText(selectedOptions, separator = ' · ') {
+  if (!Array.isArray(selectedOptions)) return Object.entries(selectedOptions || {}).map(([key, value]) => `${key}: ${value}`).join(separator);
+  const grouped = new Map();
+  selectedOptions.forEach((selection) => grouped.set(selection.groupName, [...(grouped.get(selection.groupName) || []), selection.name]));
+  return [...grouped.entries()].map(([group, names]) => `${group}: ${names.join(', ')}`).join(separator);
 }
 
 function usePersistedState(key, fallback, normalize = identity) {
@@ -406,8 +449,7 @@ function ensureSessionMetric() {
 }
 
 function calculateLine(item) {
-  const proteinExtra = Object.values(item.selectedOptions || {}).some((value) => String(value).includes('+$25'));
-  return (itemNumericPrice(item) || 0) + (proteinExtra ? 25 : 0);
+  return (itemNumericPrice(item) || 0) + selectedOptionExtra(item.selectedOptions);
 }
 
 function createOrderNumber() {
@@ -422,7 +464,8 @@ function createOrderNumber() {
 }
 
 function App() {
-  const [menu, setMenu] = usePersistedState(STORAGE.menu, normalizeMenu(initialMenu), normalizeMenu);
+  const [menu, setMenu] = useState(() => isSupabaseConfigured ? [] : normalizeMenu(readStorage(STORAGE.menu, initialMenu)));
+  useEffect(() => { if (!isSupabaseConfigured) writeStorage(STORAGE.menu, normalizeMenu(menu)); }, [menu]);
   const [business, setBusiness] = usePersistedState(STORAGE.business, normalizeBusiness(businessDefaults), normalizeBusiness);
   const [cart, setCart] = usePersistedState(STORAGE.cart, []);
   const [profile, setProfile] = usePersistedState(STORAGE.profile, { name: '', phone: '', isMember: false });
@@ -750,11 +793,12 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   const displayImageUrls = imageUrls.length > 0 ? imageUrls : (productFallbackError ? [] : [PORTAL_IMAGES.product]);
   const removableIngredients = removableIngredientNames(item.ingredients);
   const optionList = productOptions(item);
+  const optionGroups = activeOptionGroups(item);
+  const [selectedOptionIds, setSelectedOptionIds] = useState({});
+  const [optionError, setOptionError] = useState('');
   const [selectedOptions, setSelectedOptions] = useState(() => {
     const options = {};
-    optionList.forEach((option) => {
-      options[option.name] = option.values?.[0] || '';
-    });
+    optionList.forEach((option) => { options[option.name] = option.values?.[0] || ''; });
     return options;
   });
 
@@ -801,7 +845,27 @@ function ProductCard({ item, categoryId, addToCart, images }) {
     setLightboxOpen(true);
   }
 
+  function toggleProductOption(group, option) {
+    setOptionError('');
+    setSelectedOptionIds((current) => {
+      const selected = current[group.id] || [];
+      if (group.selectionType === 'single') return { ...current, [group.id]: selected.includes(option.id) && !group.required ? [] : [option.id] };
+      if (selected.includes(option.id)) return { ...current, [group.id]: selected.filter((id) => id !== option.id) };
+      if (selected.length >= group.maxSelect) return current;
+      return { ...current, [group.id]: [...selected, option.id] };
+    });
+  }
+
   function handleAdd() {
+    for (const group of optionGroups) {
+      const count = (selectedOptionIds[group.id] || []).length;
+      if (group.required && count < Math.max(1, group.minSelect)) { setOptionError(requiredOptionError(group)); return; }
+      if (count > group.maxSelect) return;
+    }
+    const structuredOptions = optionGroups.flatMap((group) => (selectedOptionIds[group.id] || []).map((id) => {
+      const option = group.options.find((candidate) => candidate.id === id);
+      return option && { groupId: group.id, groupName: group.name, optionId: option.id, name: option.name, priceDelta: Number(option.priceDelta) || 0 };
+    }).filter(Boolean));
     addToCart({
       id: item.id,
       supabaseProductId: item.supabaseProductId || (isUuid(item.id) ? item.id : undefined),
@@ -814,7 +878,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       effectivePrice,
       quantity,
       removedIngredients: removed,
-      selectedOptions,
+      selectedOptions: structuredOptions.length ? structuredOptions : selectedOptions,
       description: item.description
     });
   }
@@ -867,21 +931,19 @@ function ProductCard({ item, categoryId, addToCart, images }) {
         <strong className="price">{item.priceLabel || 'Precio por confirmar'}</strong>
       )}
 
-      {optionList.length > 0 && (
-        <div className="modifiers">
-          {optionList.map((option) => (
-            <label key={option.name}>
-              {option.name}
-              <select
-                value={selectedOptions[option.name] || ''}
-                onChange={(event) => setSelectedOptions((current) => ({ ...current, [option.name]: event.target.value }))}
-              >
-                {(option.values || []).map((value) => <option key={value} value={value}>{value}</option>)}
-              </select>
-            </label>
-          ))}
-        </div>
-      )}
+      {optionGroups.length > 0 && <div className="product-options">
+        {optionGroups.map((group) => <fieldset key={group.id} className="product-option-group">
+          <legend>{group.name}{group.required ? ' *' : ''}</legend>
+          <p className="product-option-group__instruction">{optionGroupInstruction(group)}</p>
+          {!group.options.length && <p className="small-note">Sin opciones disponibles.</p>}
+          <div className="option-chips">{group.options.map((option) => {
+            const selected = (selectedOptionIds[group.id] || []).includes(option.id);
+            return <button type="button" key={option.id} className={selected ? 'option-chip option-chip--selected' : 'option-chip'} aria-pressed={selected} onClick={() => toggleProductOption(group, option)}>{option.name}{Number(option.priceDelta) > 0 ? ` +${formatMoney(option.priceDelta)}` : ''}</button>;
+          })}</div>
+        </fieldset>)}
+        {optionError && <p className="option-error" role="alert">{optionError}</p>}
+      </div>}
+      {optionGroups.length === 0 && optionList.length > 0 && <div className="modifiers">{optionList.map((option) => <label key={option.name}>{option.name}<select value={selectedOptions[option.name] || ''} onChange={(event) => setSelectedOptions((current) => ({ ...current, [option.name]: event.target.value }))}>{(option.values || []).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>)}</div>}
 
       {removableIngredients.length > 0 && <div className="ingredients">
         <p>Quitar ingredientes:</p>
@@ -1178,9 +1240,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
   function buildMessage(forStripeOrderNumber = '') {
     const orderNumber = forStripeOrderNumber || createOrderNumber();
     const items = cart.map((item, index) => {
-      const opts = Object.entries(item.selectedOptions || {})
-        .map(([key, value]) => `${key}: ${value}`)
-        .join(', ');
+      const opts = selectedOptionsText(item.selectedOptions, ', ');
       const removed = item.removedIngredients?.length ? ` | Sin: ${item.removedIngredients.join(', ')}` : '';
       const linePrice = calculateLine(item) * item.quantity;
       const priceText = linePrice ? ` | Subtotal: ${formatMoney(linePrice)}` : '';
@@ -1266,7 +1326,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
               <div key={item.cartId} className="cart-item">
                 <div>
                   <strong>{item.quantity} x {item.name}</strong>
-                  <p>{Object.entries(item.selectedOptions || {}).map(([k, v]) => `${k}: ${v}`).join(' · ')}</p>
+                  <p>{selectedOptionsText(item.selectedOptions)}</p>
                   {item.removedIngredients?.length > 0 && <p>Sin: {item.removedIngredients.join(', ')}</p>}
                 </div>
                 <div className="cart-item__side">
@@ -2024,6 +2084,74 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
 
 
 
+function ProductOptionsAdmin({ productId, adminPin, initialGroups = [] }) {
+  const [groups, setGroups] = useState(initialGroups);
+  const [status, setStatus] = useState('Cargando opciones...');
+  const [loadError, setLoadError] = useState('');
+
+  async function loadOptions() {
+    if (!isSupabaseConfigured || !productId) { setStatus('Opciones disponibles al guardar el producto en Supabase.'); return; }
+    setStatus('Cargando opciones...');
+    setLoadError('');
+    try {
+      const result = await adminRequest('admin-product-options', { method: 'GET', pin: adminPin, body: { productId } });
+      setGroups(result.groups || []);
+      setStatus((result.groups || []).length ? 'Opciones sincronizadas.' : 'Sin grupos de opciones. Agrega el primero.');
+    } catch (error) {
+      setLoadError(error.message);
+      setStatus('');
+    }
+  }
+
+  useEffect(() => { loadOptions(); }, [productId, adminPin]);
+
+  async function saveOptions() {
+    setStatus('Guardando opciones...');
+    setLoadError('');
+    try {
+      const result = await adminRequest('admin-product-options', { method: 'PUT', pin: adminPin, body: { productId, groups } });
+      setGroups(result.groups || []);
+      setStatus('Opciones guardadas en Supabase.');
+    } catch (error) {
+      setLoadError(error.message);
+      setStatus('');
+    }
+  }
+
+  const onChange = setGroups;
+  const patchGroup = (index, patch) => onChange(groups.map((group, i) => i === index ? { ...group, ...patch } : group));
+  const removeGroup = (index) => onChange(groups.filter((_, i) => i !== index));
+  const addGroup = () => onChange([...groups, { id: `new-group-${Date.now()}`, name: '', required: false, selectionType: 'single', minSelect: 0, maxSelect: 1, sortOrder: groups.length, isActive: true, options: [] }]);
+  const patchOption = (groupIndex, optionIndex, patch) => patchGroup(groupIndex, { options: groups[groupIndex].options.map((option, i) => i === optionIndex ? { ...option, ...patch } : option) });
+  const addOption = (groupIndex) => patchGroup(groupIndex, { options: [...(groups[groupIndex].options || []), { id: `new-option-${Date.now()}`, name: '', priceDelta: 0, isActive: true, sortOrder: groups[groupIndex].options?.length || 0 }] });
+  const removeOption = (groupIndex, optionIndex) => patchGroup(groupIndex, { options: groups[groupIndex].options.filter((_, i) => i !== optionIndex) });
+  return <div className="admin-options"><div className="admin-subheader"><strong>Opciones del producto</strong><div className="admin-actions"><button type="button" className="button--ghost" onClick={loadOptions}>Recargar</button><button type="button" className="button--ghost" onClick={addGroup}>Agregar grupo</button><button type="button" onClick={saveOptions} disabled={status === 'Guardando opciones...'}>Guardar opciones</button></div></div>
+    {loadError && <p className="option-error" role="alert">Error real de Supabase: {loadError}</p>}
+    {status && <p className="small-note">{status}</p>}
+    {!groups.length && <button type="button" className="button--ghost" onClick={addGroup}>Agregar grupo de opciones</button>}
+    {groups.map((group, groupIndex) => <div className="option-group-editor" key={group.id || groupIndex}>
+      <div className="option-group-editor__grid">
+        <label>Nombre del grupo<input value={group.name || ''} onChange={(e) => patchGroup(groupIndex, { name: e.target.value })} /></label>
+        <label>Tipo<select value={group.selectionType || 'single'} onChange={(e) => patchGroup(groupIndex, { selectionType: e.target.value, maxSelect: e.target.value === 'single' ? 1 : Math.max(1, group.maxSelect || 1) })}><option value="single">Selección única</option><option value="multiple">Selección múltiple</option></select></label>
+        <label>Mínimo<input type="number" min="0" value={group.minSelect ?? 0} onChange={(e) => patchGroup(groupIndex, { minSelect: Math.max(group.required ? 1 : 0, Number(e.target.value)) })} /></label>
+        <label>Máximo<input type="number" min="1" disabled={group.selectionType !== 'multiple'} value={group.selectionType === 'multiple' ? group.maxSelect ?? 1 : 1} onChange={(e) => patchGroup(groupIndex, { maxSelect: Math.max(1, group.minSelect || 0, Number(e.target.value) || 1) })} /></label>
+        <label>Orden<input type="number" value={group.sortOrder ?? groupIndex} onChange={(e) => patchGroup(groupIndex, { sortOrder: Number(e.target.value) })} /></label>
+        <label className="checkbox-line"><input type="checkbox" checked={group.required === true} onChange={(e) => patchGroup(groupIndex, { required: e.target.checked, minSelect: e.target.checked ? Math.max(1, group.minSelect || 0) : group.minSelect || 0 })} />Obligatorio</label>
+        <label className="checkbox-line"><input type="checkbox" checked={group.isActive !== false} onChange={(e) => patchGroup(groupIndex, { isActive: e.target.checked })} />Activo</label>
+        <button type="button" className="button--danger" onClick={() => removeGroup(groupIndex)}>Eliminar grupo</button>
+      </div>
+      {(group.options || []).map((option, optionIndex) => <div className="option-editor" key={option.id || optionIndex}>
+        <label>Opción<input value={option.name || ''} onChange={(e) => patchOption(groupIndex, optionIndex, { name: e.target.value })} /></label>
+        <label>Precio extra<input type="number" step="0.01" value={option.priceDelta ?? 0} min="0" onChange={(e) => patchOption(groupIndex, optionIndex, { priceDelta: Math.max(0, Number(e.target.value) || 0) })} /></label>
+        <label>Orden<input type="number" value={option.sortOrder ?? optionIndex} onChange={(e) => patchOption(groupIndex, optionIndex, { sortOrder: Number(e.target.value) })} /></label>
+        <label className="checkbox-line"><input type="checkbox" checked={option.isActive !== false} onChange={(e) => patchOption(groupIndex, optionIndex, { isActive: e.target.checked })} />Activa</label>
+        <button type="button" className="button--danger" onClick={() => removeOption(groupIndex, optionIndex)}>Eliminar</button>
+      </div>)}
+      <button type="button" className="button--ghost" onClick={() => addOption(groupIndex)}>Agregar opción</button>
+    </div>)}
+  </div>;
+}
+
 function AdminProductEditor({ item, category, adminCategories, productImages, adminPin, persistProduct, deleteItem, refreshProductImages, productImagesError }) {
   const [draft, setDraft] = useState(() => ({ ...item, categoryId: category.id, newIngredientName: '', newIngredientRemovable: true }));
   const [saveStatus, setSaveStatus] = useState('');
@@ -2084,7 +2212,9 @@ function AdminProductEditor({ item, category, adminCategories, productImages, ad
       discount_price: parseOptionalNumber(draft.discountPrice),
       price: parseOptionalNumber(draft.price),
       cost: parseOptionalNumber(draft.cost),
-      ingredients: normalizeIngredients(draft.ingredients)
+      ingredients: normalizeIngredients(draft.ingredients),
+      optionGroupsLoaded: draft.optionGroupsLoaded !== false,
+      optionGroups: draft.optionGroups || []
     };
     console.log('Guardando descuento', productToSave.name, {
       price: productToSave.price,
@@ -2191,6 +2321,8 @@ function AdminProductEditor({ item, category, adminCategories, productImages, ad
           <button type="button" className="button--ghost" onClick={addDraftIngredient}>Agregar</button>
         </div>
       </div>
+
+      <ProductOptionsAdmin productId={draft.supabaseProductId || draft.id} adminPin={adminPin} initialGroups={draft.optionGroups || []} />
 
       <div className="admin-product-editor__actions">
         <button className={draft.available !== false ? 'status status--ok' : 'status status--off'} onClick={() => patchDraft({ available: draft.available === false })}>

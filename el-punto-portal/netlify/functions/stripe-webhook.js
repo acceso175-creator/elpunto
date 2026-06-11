@@ -1,4 +1,4 @@
-import Stripe from 'stripe';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { getSupabaseAdmin, json } from './_supabaseAdmin.js';
 
 function rawBody(event) {
@@ -7,6 +7,27 @@ function rawBody(event) {
 
 function stripeSignature(event) {
   return event.headers['stripe-signature'] || event.headers['Stripe-Signature'];
+}
+
+function constructStripeEvent(event, secret, toleranceSeconds = 300) {
+  const signature = stripeSignature(event);
+  if (!signature) throw new Error('Falta Stripe-Signature.');
+  const parts = signature.split(',').reduce((result, part) => {
+    const [key, value] = part.split('=');
+    if (key && value) result[key] = [...(result[key] || []), value];
+    return result;
+  }, {});
+  const timestamp = Number(parts.t?.[0]);
+  if (!Number.isFinite(timestamp) || Math.abs(Date.now() / 1000 - timestamp) > toleranceSeconds) throw new Error('La firma expiró.');
+  const payload = rawBody(event);
+  const expected = createHmac('sha256', secret).update(`${timestamp}.`).update(payload).digest('hex');
+  const valid = (parts.v1 || []).some((signatureValue) => {
+    const expectedBuffer = Buffer.from(expected, 'hex');
+    const actualBuffer = Buffer.from(signatureValue, 'hex');
+    return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
+  });
+  if (!valid) throw new Error('La firma no coincide.');
+  return JSON.parse(payload.toString('utf8'));
 }
 
 async function updateOrderById(supabase, orderId, payload) {
@@ -40,16 +61,13 @@ async function insertPayment(supabase, payment) {
 export async function handler(event) {
   if (event.httpMethod !== 'POST') return json(405, { error: 'Método no permitido.' });
 
-  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!stripeSecretKey || !webhookSecret) return json(500, { error: 'Faltan variables privadas del webhook de Stripe.' });
-
-  const stripe = new Stripe(stripeSecretKey);
+  if (!webhookSecret) return json(500, { error: 'Falta STRIPE_WEBHOOK_SECRET.' });
   let stripeEvent;
 
   try {
     // Security: the webhook must verify Stripe-Signature against the raw payload and STRIPE_WEBHOOK_SECRET.
-    stripeEvent = stripe.webhooks.constructEvent(rawBody(event), stripeSignature(event), webhookSecret);
+    stripeEvent = constructStripeEvent(event, webhookSecret);
   } catch (error) {
     return json(400, { error: `Firma de Stripe inválida: ${error.message}` });
   }
