@@ -86,7 +86,8 @@ function mapBusinessSettings(row) {
 }
 
 async function adminRequest(functionName, { method = 'POST', pin, body = {} } = {}) {
-  const endpoint = `/.netlify/functions/${functionName}${method === 'GET' ? `?t=${Date.now()}` : ''}`;
+  const query = method === 'GET' ? new URLSearchParams({ t: String(Date.now()), ...Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined && value !== null).map(([key, value]) => [key, String(value)])) }) : null;
+  const endpoint = `/.netlify/functions/${functionName}${query ? `?${query}` : ''}`;
   const response = await fetch(endpoint, {
     method,
     cache: 'no-store',
@@ -97,7 +98,12 @@ async function adminRequest(functionName, { method = 'POST', pin, body = {} } = 
     body: method === 'GET' ? undefined : JSON.stringify({ adminPin: pin, ...body })
   });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || 'Error en función de Netlify.');
+  if (!response.ok) {
+    const details = result.supabaseError;
+    const message = details ? [details.message, details.code && `Código: ${details.code}`, details.details && `Detalles: ${details.details}`, details.hint && `Sugerencia: ${details.hint}`].filter(Boolean).join(' · ') : result.error || 'Error en función de Netlify.';
+    console.error(`[${functionName}]`, result);
+    throw new Error(message);
+  }
   return result;
 }
 
@@ -2061,15 +2067,51 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
 
 
 
-function ProductOptionsAdmin({ groups, onChange }) {
+function ProductOptionsAdmin({ productId, adminPin, initialGroups = [] }) {
+  const [groups, setGroups] = useState(initialGroups);
+  const [status, setStatus] = useState('Cargando opciones...');
+  const [loadError, setLoadError] = useState('');
+
+  async function loadOptions() {
+    if (!isSupabaseConfigured || !productId) { setStatus('Opciones disponibles al guardar el producto en Supabase.'); return; }
+    setStatus('Cargando opciones...');
+    setLoadError('');
+    try {
+      const result = await adminRequest('admin-product-options', { method: 'GET', pin: adminPin, body: { productId } });
+      setGroups(result.groups || []);
+      setStatus((result.groups || []).length ? 'Opciones sincronizadas.' : 'Sin grupos de opciones. Agrega el primero.');
+    } catch (error) {
+      setLoadError(error.message);
+      setStatus('');
+    }
+  }
+
+  useEffect(() => { loadOptions(); }, [productId, adminPin]);
+
+  async function saveOptions() {
+    setStatus('Guardando opciones...');
+    setLoadError('');
+    try {
+      const result = await adminRequest('admin-product-options', { method: 'PUT', pin: adminPin, body: { productId, groups } });
+      setGroups(result.groups || []);
+      setStatus('Opciones guardadas en Supabase.');
+    } catch (error) {
+      setLoadError(error.message);
+      setStatus('');
+    }
+  }
+
+  const onChange = setGroups;
   const patchGroup = (index, patch) => onChange(groups.map((group, i) => i === index ? { ...group, ...patch } : group));
   const removeGroup = (index) => onChange(groups.filter((_, i) => i !== index));
   const addGroup = () => onChange([...groups, { id: `new-group-${Date.now()}`, name: '', required: false, selectionType: 'single', minSelect: 0, maxSelect: 1, sortOrder: groups.length, isActive: true, options: [] }]);
   const patchOption = (groupIndex, optionIndex, patch) => patchGroup(groupIndex, { options: groups[groupIndex].options.map((option, i) => i === optionIndex ? { ...option, ...patch } : option) });
   const addOption = (groupIndex) => patchGroup(groupIndex, { options: [...(groups[groupIndex].options || []), { id: `new-option-${Date.now()}`, name: '', priceDelta: 0, isActive: true, sortOrder: groups[groupIndex].options?.length || 0 }] });
   const removeOption = (groupIndex, optionIndex) => patchGroup(groupIndex, { options: groups[groupIndex].options.filter((_, i) => i !== optionIndex) });
-  return <div className="admin-options"><div className="admin-subheader"><strong>Opciones del producto</strong><button type="button" className="button--ghost" onClick={addGroup}>Crear grupo</button></div>
-    {!groups.length && <p className="small-note">Sin grupos de opciones configurados.</p>}
+  return <div className="admin-options"><div className="admin-subheader"><strong>Opciones del producto</strong><div className="admin-actions"><button type="button" className="button--ghost" onClick={loadOptions}>Recargar</button><button type="button" className="button--ghost" onClick={addGroup}>Agregar grupo</button><button type="button" onClick={saveOptions} disabled={status === 'Guardando opciones...'}>Guardar opciones</button></div></div>
+    {loadError && <p className="option-error" role="alert">Error real de Supabase: {loadError}</p>}
+    {status && <p className="small-note">{status}</p>}
+    {!groups.length && <button type="button" className="button--ghost" onClick={addGroup}>Agregar grupo de opciones</button>}
     {groups.map((group, groupIndex) => <div className="option-group-editor" key={group.id || groupIndex}>
       <div className="option-group-editor__grid">
         <label>Nombre del grupo<input value={group.name || ''} onChange={(e) => patchGroup(groupIndex, { name: e.target.value })} /></label>
@@ -2263,7 +2305,7 @@ function AdminProductEditor({ item, category, adminCategories, productImages, ad
         </div>
       </div>
 
-      {draft.optionGroupsLoaded === false ? <p className="option-error">No se pudieron cargar las opciones. Recarga Supabase antes de editarlas; el producto puede guardarse sin borrarlas.</p> : <ProductOptionsAdmin groups={draft.optionGroups || []} onChange={(optionGroups) => patchDraft({ optionGroups })} />}
+      <ProductOptionsAdmin productId={draft.supabaseProductId || draft.id} adminPin={adminPin} initialGroups={draft.optionGroups || []} />
 
       <div className="admin-product-editor__actions">
         <button className={draft.available !== false ? 'status status--ok' : 'status status--off'} onClick={() => patchDraft({ available: draft.available === false })}>

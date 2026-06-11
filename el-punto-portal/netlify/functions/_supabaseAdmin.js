@@ -8,6 +8,10 @@ export function json(statusCode, body) {
   };
 }
 
+export function supabaseErrorDetails(error) {
+  return { message: error?.message || null, code: error?.code || null, details: error?.details || null, hint: error?.hint || null };
+}
+
 export function parseBody(event) {
   if (!event.body) return {};
   try {
@@ -72,9 +76,10 @@ async function loadProductRelations(supabase, products) {
   const optionsResult = groupIds.length
     ? await supabase.from('product_options').select('id, group_id, name, price_delta, is_active, sort_order').in('group_id', groupIds).order('sort_order', { ascending: true })
     : { data: [], error: null };
-  if (ingredientsResult.error) console.warn('No se pudieron cargar ingredientes:', ingredientsResult.error.message);
-  if (imagesResult.error) console.warn('No se pudieron cargar imágenes:', imagesResult.error.message);
-  if (groupsResult.error || optionsResult.error) console.warn('No se pudieron cargar opciones:', groupsResult.error?.message || optionsResult.error?.message);
+  if (ingredientsResult.error) console.error('[admin products] product_ingredients', supabaseErrorDetails(ingredientsResult.error));
+  if (imagesResult.error) console.error('[admin products] product_images', supabaseErrorDetails(imagesResult.error));
+  if (groupsResult.error) console.error('[admin products] product_option_groups', supabaseErrorDetails(groupsResult.error));
+  if (optionsResult.error) console.error('[admin products] product_options', supabaseErrorDetails(optionsResult.error));
   const byProduct = (rows) => rows.reduce((map, row) => map.set(row.product_id, [...(map.get(row.product_id) || []), row]), new Map());
   const ingredientsByProduct = byProduct(ingredientsResult.error ? [] : ingredientsResult.data || []);
   const imagesByProduct = byProduct(imagesResult.error ? [] : imagesResult.data || []);

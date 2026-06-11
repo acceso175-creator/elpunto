@@ -211,9 +211,11 @@ async function getPublicProductRelations(products) {
     ? await supabase.from('product_options').select('id, group_id, name, price_delta, is_active, sort_order').in('group_id', groupIds).eq('is_active', true).order('sort_order', { ascending: true })
     : { data: [], error: null };
 
-  if (ingredientsResult.error) console.warn('[El Punto] No se pudieron cargar ingredientes.', ingredientsResult.error.message);
-  if (imagesResult.error) console.warn('[El Punto] No se pudieron cargar imágenes.', imagesResult.error.message);
-  if (groupsResult.error || optionsResult.error) console.warn('[El Punto] No se pudieron cargar opciones; los productos seguirán disponibles.', groupsResult.error?.message || optionsResult.error?.message);
+  const logSupabaseError = (table, error) => console.error(`[El Punto] Error cargando ${table}`, { message: error?.message, code: error?.code, details: error?.details, hint: error?.hint });
+  if (ingredientsResult.error) logSupabaseError('product_ingredients', ingredientsResult.error);
+  if (imagesResult.error) logSupabaseError('product_images', imagesResult.error);
+  if (groupsResult.error) logSupabaseError('product_option_groups', groupsResult.error);
+  if (optionsResult.error) logSupabaseError('product_options', optionsResult.error);
 
   const byProduct = (rows) => rows.reduce((map, row) => map.set(row.product_id, [...(map.get(row.product_id) || []), row]), new Map());
   const ingredientsByProduct = byProduct(ingredientsResult.error ? [] : ingredientsResult.data || []);
