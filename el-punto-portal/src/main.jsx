@@ -223,6 +223,22 @@ function activeOptionGroups(product) {
     .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
 }
 
+function optionGroupInstruction(group) {
+  const minSelect = Math.max(group.required ? 1 : 0, Number(group.minSelect) || 0);
+  const maxSelect = Math.max(1, Number(group.maxSelect) || 1);
+  if (group.selectionType === 'single') return group.required ? 'Elige 1 opción' : 'Elige 1 opción (opcional)';
+  if (group.required && minSelect > 0) {
+    if (maxSelect > minSelect) return `Elige de ${minSelect} a ${maxSelect} opciones`;
+    return `Elige ${minSelect} ${minSelect === 1 ? 'opción' : 'opciones'}`;
+  }
+  return `Elige hasta ${maxSelect} ${maxSelect === 1 ? 'opción' : 'opciones'}`;
+}
+
+function requiredOptionError(group) {
+  const minSelect = Math.max(1, Number(group.minSelect) || 1);
+  return minSelect === 1 ? `Selecciona una opción de ${group.name}.` : `Selecciona al menos ${minSelect} opciones de ${group.name}.`;
+}
+
 function selectedOptionExtra(selectedOptions) {
   if (!Array.isArray(selectedOptions)) return Object.values(selectedOptions || {}).some((value) => String(value).includes('+$25')) ? 25 : 0;
   return selectedOptions.reduce((sum, selection) => sum + (Number(selection.priceDelta) || 0), 0);
@@ -835,7 +851,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       const selected = current[group.id] || [];
       if (group.selectionType === 'single') return { ...current, [group.id]: selected.includes(option.id) && !group.required ? [] : [option.id] };
       if (selected.includes(option.id)) return { ...current, [group.id]: selected.filter((id) => id !== option.id) };
-      if (selected.length >= group.maxSelect) { setOptionError(`Puedes seleccionar máximo ${group.maxSelect} en ${group.name}.`); return current; }
+      if (selected.length >= group.maxSelect) return current;
       return { ...current, [group.id]: [...selected, option.id] };
     });
   }
@@ -843,8 +859,8 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   function handleAdd() {
     for (const group of optionGroups) {
       const count = (selectedOptionIds[group.id] || []).length;
-      if (count < group.minSelect) { setOptionError(`Selecciona ${group.minSelect === 1 ? 'una opción' : `al menos ${group.minSelect} opciones`} de ${group.name}.`); return; }
-      if (count > group.maxSelect) { setOptionError(`Selecciona máximo ${group.maxSelect} opciones de ${group.name}.`); return; }
+      if (group.required && count < Math.max(1, group.minSelect)) { setOptionError(requiredOptionError(group)); return; }
+      if (count > group.maxSelect) return;
     }
     const structuredOptions = optionGroups.flatMap((group) => (selectedOptionIds[group.id] || []).map((id) => {
       const option = group.options.find((candidate) => candidate.id === id);
@@ -917,7 +933,8 @@ function ProductCard({ item, categoryId, addToCart, images }) {
 
       {optionGroups.length > 0 && <div className="product-options">
         {optionGroups.map((group) => <fieldset key={group.id} className="product-option-group">
-          <legend>{group.name}{group.required ? ' *' : ''} <small>{group.selectionType === 'multiple' ? `${group.minSelect}-${group.maxSelect}` : 'Elige una'}</small></legend>
+          <legend>{group.name}{group.required ? ' *' : ''}</legend>
+          <p className="product-option-group__instruction">{optionGroupInstruction(group)}</p>
           {!group.options.length && <p className="small-note">Sin opciones disponibles.</p>}
           <div className="option-chips">{group.options.map((option) => {
             const selected = (selectedOptionIds[group.id] || []).includes(option.id);
