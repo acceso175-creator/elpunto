@@ -196,40 +196,65 @@ export async function getProducts() {
   return data || [];
 }
 
+async function loadPublicOptionsFallback(productIds) {
+  const response = await fetch(`/.netlify/functions/public-product-options?productIds=${encodeURIComponent(productIds.join(','))}`, { cache: 'no-store' });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'No se pudieron cargar las opciones públicas.');
+  return { groups: result.groups || [], options: result.options || [] };
+}
+
 async function getPublicProductRelations(products) {
   const productIds = products.map((product) => product.id).filter(Boolean);
   if (!productIds.length) return products;
+  console.log('MENU products', products);
 
   const [ingredientsResult, imagesResult, groupsResult] = await Promise.all([
     supabase.from('product_ingredients').select('id, product_id, name, removable, sort_order').in('product_id', productIds),
     supabase.from('product_images').select('id, product_id, image_url, storage_path, sort_order').in('product_id', productIds),
     supabase.from('product_option_groups').select('id, product_id, name, required, selection_type, min_select, max_select, sort_order, is_active').in('product_id', productIds).eq('is_active', true).order('sort_order', { ascending: true })
   ]);
-  const groups = groupsResult.error ? [] : groupsResult.data || [];
-  const groupIds = groups.map((group) => group.id);
-  const optionsResult = groupIds.length
+  let groups = groupsResult.error ? [] : groupsResult.data || [];
+  let groupIds = groups.map((group) => group.id);
+  let optionsResult = groupIds.length
     ? await supabase.from('product_options').select('id, group_id, name, price_delta, is_active, sort_order').in('group_id', groupIds).eq('is_active', true).order('sort_order', { ascending: true })
     : { data: [], error: null };
+  let options = optionsResult.error ? [] : optionsResult.data || [];
 
   const logSupabaseError = (table, error) => console.error(`[El Punto] Error cargando ${table}`, { message: error?.message, code: error?.code, details: error?.details, hint: error?.hint });
   if (ingredientsResult.error) logSupabaseError('product_ingredients', ingredientsResult.error);
   if (imagesResult.error) logSupabaseError('product_images', imagesResult.error);
   if (groupsResult.error) logSupabaseError('product_option_groups', groupsResult.error);
   if (optionsResult.error) logSupabaseError('product_options', optionsResult.error);
+  console.log('MENU option groups', groups);
+  console.log('MENU options', options);
 
-  const byProduct = (rows) => rows.reduce((map, row) => map.set(row.product_id, [...(map.get(row.product_id) || []), row]), new Map());
+  try {
+    // Admin writes use the service role. This active-only endpoint guarantees that public options
+    // remain visible even when the deployed anon RLS policies have not been refreshed yet.
+    const fallback = await loadPublicOptionsFallback(productIds);
+    groups = fallback.groups;
+    options = fallback.options;
+    console.log('MENU option groups (Netlify active-only)', groups);
+    console.log('MENU options (Netlify active-only)', options);
+  } catch (error) {
+    console.error('[El Punto] Error en respaldo público de opciones', { message: error.message });
+  }
+
+  const byProduct = (rows) => rows.reduce((map, row) => map.set(String(row.product_id), [...(map.get(String(row.product_id)) || []), row]), new Map());
   const ingredientsByProduct = byProduct(ingredientsResult.error ? [] : ingredientsResult.data || []);
   const imagesByProduct = byProduct(imagesResult.error ? [] : imagesResult.data || []);
-  const groupsByProduct = byProduct(groupsResult.error || optionsResult.error ? [] : groups);
+  const groupsByProduct = byProduct(groups);
   const optionsByGroup = new Map();
-  (groupsResult.error || optionsResult.error ? [] : optionsResult.data || []).forEach((option) => optionsByGroup.set(option.group_id, [...(optionsByGroup.get(option.group_id) || []), option]));
+  options.forEach((option) => optionsByGroup.set(String(option.group_id), [...(optionsByGroup.get(String(option.group_id)) || []), option]));
 
-  return products.map((product) => ({
+  const productsWithOptions = products.map((product) => ({
     ...product,
-    product_ingredients: ingredientsByProduct.get(product.id) || [],
-    product_images: imagesByProduct.get(product.id) || [],
-    product_option_groups: (groupsByProduct.get(product.id) || []).map((group) => ({ ...group, product_options: optionsByGroup.get(group.id) || [] }))
+    product_ingredients: ingredientsByProduct.get(String(product.id)) || [],
+    product_images: imagesByProduct.get(String(product.id)) || [],
+    product_option_groups: (groupsByProduct.get(String(product.id)) || []).map((group) => ({ ...group, product_options: optionsByGroup.get(String(group.id)) || [] }))
   }));
+  console.log('MENU products with option groups', productsWithOptions);
+  return productsWithOptions;
 }
 
 export async function getProductIngredients(productId) {
