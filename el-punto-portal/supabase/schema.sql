@@ -117,7 +117,7 @@ create policy "Public can read images for available products" on public.product_
 
 do $$
 declare
-  primary_whatsapp constant text := '526145999748';
+  primary_whatsapp constant text := '526146087217';
 begin
   update public.business_settings set whatsapp_number = primary_whatsapp where whatsapp_number is distinct from primary_whatsapp;
 
