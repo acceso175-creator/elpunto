@@ -1452,3 +1452,26 @@ main { padding-top: 84px; }
 .option-editor { display: grid; grid-template-columns: 1.5fr .7fr .55fr auto auto; gap: 0.55rem; align-items: end; padding-left: 0.7rem; border-left: 2px solid rgba(224, 32, 32, 0.45); }
 @media (max-width: 1100px) { .option-group-editor__grid, .option-editor { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 620px) { .option-group-editor__grid, .option-editor { grid-template-columns: 1fr; } .product-options { max-height: 220px; } }
+.admin-primary-actions { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+.admin-order-screen { max-width:1500px; }
+.admin-order-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(320px,420px); gap:1rem; align-items:start; }
+.admin-menu-picker { display:grid; gap:1rem; }
+.admin-product-pick-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:.75rem; }
+.admin-product-pick { display:grid; gap:.55rem; padding:.85rem; border:1px solid var(--line); border-radius:16px; background:var(--card); }
+.admin-product-pick p { color:var(--muted); margin:0; font-size:.85rem; }
+.admin-product-pick fieldset { border:1px solid var(--line); border-radius:12px; padding:.45rem; }
+.admin-order-cart { position:sticky; top:1rem; max-height:calc(100vh - 2rem); overflow:auto; }
+.admin-cart-line { display:grid; gap:.45rem; padding:.7rem 0; border-bottom:1px solid var(--line); }
+.admin-cart-line div { display:flex; gap:.4rem; align-items:center; }
+.cut-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:1rem; margin-top:1rem; }
+@media(max-width:900px){.admin-order-layout{grid-template-columns:1fr}.admin-order-cart{position:static;max-height:none}.cut-grid{grid-template-columns:1fr}.admin-primary-actions{align-items:flex-start;flex-direction:column}}
+.sales-history { max-width: 1500px; }
+.history-filters { display: grid; gap: .85rem; }
+.history-filters .admin-actions { flex-wrap: wrap; }
+.history-summary { margin: 1rem 0; }
+@media (max-width: 720px) {
+  .sales-history .orders-table, .sales-history .orders-table thead, .sales-history .orders-table tbody, .sales-history .orders-table th, .sales-history .orders-table td, .sales-history .orders-table tr { display: block; }
+  .sales-history .orders-table thead { display: none; }
+  .sales-history .orders-table tr { border: 1px solid var(--line); border-radius: 14px; margin-bottom: .75rem; padding: .6rem; background: var(--card); }
+  .sales-history .orders-table td { border: 0; padding: .35rem 0; }
+}
