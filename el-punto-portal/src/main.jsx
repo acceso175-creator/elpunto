@@ -36,6 +36,7 @@ const PAYMENT_METHODS = [
   { value: 'pago_en_linea', label: 'Pago en línea' },
   { value: 'criptomonedas', label: 'Criptomonedas' }
 ];
+const ADMIN_PAYMENT_METHODS = [...PAYMENT_METHODS.slice(0, 3), { value: 'cortesia', label: 'Cortesía' }];
 const BASE_CATEGORY_NAMES = ['Desayunos', 'Birria', 'Bebidas', 'Postres'];
 
 const PUBLIC_ROUTE_SECTIONS = {
@@ -1500,6 +1501,41 @@ function AccountSection({ profile, setProfile }) {
   );
 }
 
+function ManualOrderCapture({ menu, pin, onBack, onSaved }) {
+  const [search, setSearch] = useState(''); const [cart, setCart] = useState([]); const [selected, setSelected] = useState({});
+  const [form, setForm] = useState({ customerName: '', customerPhone: '', orderType: 'mostrador', paymentMethod: 'efectivo', status: 'pagado', notes: '', capturedBy: '' });
+  const [status, setStatus] = useState(''); const [lastOrder, setLastOrder] = useState(null);
+  const categories = menu.map((category) => ({ ...category, items: category.items.filter((item) => item.available !== false && item.name.toLowerCase().includes(search.toLowerCase())) })).filter((category) => category.items.length);
+  const total = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+  function toggleOption(product, group, option) {
+    const key = `${product.id}:${group.id || group.name}`; const current = selected[key] || [];
+    setSelected({ ...selected, [key]: group.selectionType === 'multiple' ? (current.some((item) => item.id === option.id) ? current.filter((item) => item.id !== option.id) : current.length < group.maxSelect ? [...current, option] : current) : [option] });
+  }
+  function add(product) {
+    const groups = activeOptionGroups(product); const options = groups.flatMap((group) => (selected[`${product.id}:${group.id || group.name}`] || []).map((option) => ({ groupName: group.name, name: option.name, priceDelta: option.priceDelta || 0 })));
+    const incomplete = groups.find((group) => group.required && (selected[`${product.id}:${group.id || group.name}`] || []).length < Math.max(1, group.minSelect || 1));
+    if (incomplete) return setStatus(requiredOptionError(incomplete));
+    const unitPrice = (getEffectivePrice(product) || 0) + selectedOptionExtra(options);
+    setCart([...cart, { key: createStableUuid(), productId: product.supabaseProductId || product.id, productName: product.name, quantity: 1, unitPrice, selectedOptions: options, itemNotes: '' }]); setStatus('');
+  }
+  async function save() {
+    if (!cart.length) return setStatus('No se puede guardar un pedido vacío.');
+    if (!form.capturedBy.trim()) return setStatus('Escribe quién captura el pedido.');
+    try { setStatus('Guardando pedido...'); const result = await adminRequest('admin-manual-orders', { pin, body: { ...form, items: cart } }); setLastOrder(result.order); setCart([]); setStatus(`Pedido ${result.order.order_number} guardado correctamente.`); onSaved(); } catch (error) { setStatus(error.message); }
+  }
+  return <section className="section admin-order-screen"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Capturar pedido</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button className="button--ghost" onClick={() => { setCart([]); setLastOrder(null); }}>Nuevo pedido</button>{lastOrder && <button className="button--ghost" onClick={() => alert(`${lastOrder.order_number} · ${formatMoney(lastOrder.total)}`)}>Ver último pedido</button>}</div></div>
+    <div className="admin-order-layout"><div className="admin-menu-picker"><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar producto por nombre…" />{categories.map((category) => <div key={category.id}><h3>{category.name}</h3><div className="admin-product-pick-grid">{category.items.map((product) => <article className="admin-product-pick" key={product.id}><strong>{product.name}</strong><span>{hasValidDiscount(product) && <del>{formatMoney(product.price)} </del>}{formatMoney(getEffectivePrice(product))}</span><p>{product.description}</p>{activeOptionGroups(product).map((group) => <fieldset key={group.id || group.name}><legend>{group.name}{group.required ? ' *' : ''}</legend>{group.options.map((option) => <button type="button" className={(selected[`${product.id}:${group.id || group.name}`] || []).some((item) => item.id === option.id) ? 'option-chip option-chip--selected' : 'option-chip'} onClick={() => toggleOption(product, group, option)} key={option.id}>{option.name}{option.priceDelta ? ` +${formatMoney(option.priceDelta)}` : ''}</button>)}</fieldset>)}<button type="button" onClick={() => add(product)}>Agregar</button></article>)}</div></div>)}</div>
+      <aside className="admin-order-cart panel"><h3>Carrito</h3>{cart.length === 0 && <p className="small-note">Agrega productos para comenzar.</p>}{cart.map((item) => <div className="admin-cart-line" key={item.key}><strong>{item.productName}</strong><small>{selectedOptionsText(item.selectedOptions)}</small><div><button className="button--ghost" onClick={() => setCart(cart.map((row) => row.key === item.key ? { ...row, quantity: Math.max(1, row.quantity - 1) } : row))}>−</button><b>{item.quantity}</b><button className="button--ghost" onClick={() => setCart(cart.map((row) => row.key === item.key ? { ...row, quantity: row.quantity + 1 } : row))}>+</button><button className="button--ghost" onClick={() => setCart(cart.filter((row) => row.key !== item.key))}>Quitar</button></div><input placeholder="Notas: sin cebolla…" value={item.itemNotes} onChange={(e) => setCart(cart.map((row) => row.key === item.key ? { ...row, itemNotes: e.target.value } : row))} /><span>{formatMoney(item.unitPrice * item.quantity)}</span></div>)}<h3>Total: {formatMoney(total)}</h3>
+      <div className="form-grid one"><input placeholder="Nombre del cliente (opcional)" value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /><input placeholder="Teléfono (opcional)" value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} /><select value={form.orderType} onChange={(e) => setForm({ ...form, orderType: e.target.value })}>{['mostrador','domicilio','recoger'].map((v) => <option key={v}>{v}</option>)}</select><select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}>{ADMIN_PAYMENT_METHODS.map((v) => <option value={v.value} key={v.value}>{v.label}</option>)}</select><select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>{['pendiente','pagado','cancelado'].map((v) => <option key={v}>{v}</option>)}</select><input required placeholder="Capturado por *" value={form.capturedBy} onChange={(e) => setForm({ ...form, capturedBy: e.target.value })} /><textarea placeholder="Notas generales" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /><button onClick={save}>Guardar pedido</button><p className="small-note">{status}</p></div></aside></div></section>;
+}
+
+function AdminCuts({ pin, onBack }) {
+  const today = new Date().toISOString().slice(0, 10); const [from, setFrom] = useState(today); const [to, setTo] = useState(today); const [orders, setOrders] = useState([]); const [status, setStatus] = useState('');
+  async function load() { try { setStatus('Cargando…'); const start = `${from}T00:00:00-06:00`; const endDate = new Date(`${to}T12:00:00-06:00`); endDate.setDate(endDate.getDate() + 1); const result = await adminRequest('admin-manual-orders', { method: 'GET', pin, body: { from: start, to: endDate.toISOString() } }); setOrders(result.orders); setStatus('Corte actualizado.'); } catch (error) { setStatus(error.message); } }
+  useEffect(() => { load(); }, []); const sales = orders.filter((o) => o.status !== 'cancelado' && o.payment_method !== 'cortesia'); const total = sales.reduce((sum, o) => sum + Number(o.total), 0); const products = sales.flatMap((o) => o.admin_order_items || []); const grouped = products.reduce((map, item) => ({ ...map, [item.product_name]: (map[item.product_name] || 0) + item.quantity }), {});
+  return <section className="section"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Cortes</h2></div><button className="button--ghost" onClick={onBack}>Volver</button></div><div className="panel"><div className="admin-actions"><label>Desde <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></label><label>Hasta <input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></label><button onClick={load}>Aplicar rango</button></div><div className="metric-grid"><Metric label="Total vendido" value={formatMoney(total)} /><Metric label="Pedidos vendidos" value={sales.length} /><Metric label="Cancelados" value={orders.filter((o) => o.status === 'cancelado').length} /><Metric label="Cortesías" value={orders.filter((o) => o.payment_method === 'cortesia' && o.status !== 'cancelado').length} /></div><div className="cut-grid"><div><h3>Por método de pago</h3>{ADMIN_PAYMENT_METHODS.map((method) => <p key={method.value}>{method.label}: <strong>{formatMoney(sales.filter((o) => o.payment_method === method.value).reduce((sum, o) => sum + Number(o.total), 0))}</strong></p>)}</div><div><h3>Productos vendidos / más vendidos</h3>{Object.entries(grouped).sort((a,b) => b[1]-a[1]).map(([name, quantity]) => <p key={name}>{name}: <strong>{quantity}</strong></p>)}</div><div><h3>Ventas por capturista</h3>{Object.entries(sales.reduce((map,o) => ({ ...map, [o.captured_by]: (map[o.captured_by] || 0) + Number(o.total) }), {})).map(([name,value]) => <p key={name}>{name}: <strong>{formatMoney(value)}</strong></p>)}</div></div><p className="small-note">{status} Los límites se calculan con horario de Chihuahua.</p></div></section>;
+}
+
 function AdminSection({ menu, setMenu, business, setBusiness, productImages, refreshProductImages, productImagesError, dataSource, setDataSource }) {
   const [pin, setPin] = useState('');
   const [unlocked, setUnlocked] = useState(false);
@@ -1514,6 +1550,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   const [adminStatus, setAdminStatus] = useState('');
   const [orders, setOrders] = useState([]);
   const [ordersStatus, setOrdersStatus] = useState('');
+  const [adminView, setAdminView] = useState('inicio');
 
   useEffect(() => {
     const refresh = () => setMetrics(readStorage(STORAGE.metrics, defaultMetrics()));
@@ -1881,8 +1918,15 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     );
   }
 
+  if (adminView === 'captura') return <ManualOrderCapture menu={menu} pin={pin} onBack={() => setAdminView('inicio')} onSaved={loadOrders} />;
+  if (adminView === 'cortes') return <AdminCuts pin={pin} onBack={() => setAdminView('inicio')} />;
+
   return (
     <section id="admin" className="section admin-grid">
+      <div className="panel admin-full admin-primary-actions">
+        <div><p className="eyebrow">Acciones principales</p><h2>Operación de mostrador</h2></div>
+        <div className="admin-actions"><button type="button" onClick={() => setAdminView('captura')}>Capturar pedido</button><button type="button" className="button--ghost" onClick={() => setAdminView('cortes')}>Cortes</button></div>
+      </div>
       <div className="panel">
         <div className="section__heading compact">
           <p className="eyebrow">Admin</p>
