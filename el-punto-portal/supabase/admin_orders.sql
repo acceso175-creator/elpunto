@@ -9,7 +9,7 @@ create table if not exists public.admin_orders (
   customer_name text,
   customer_phone text,
   order_type text not null check (order_type in ('mostrador','domicilio','recoger')),
-  payment_method text not null check (payment_method in ('efectivo','tarjeta','transferencia','cortesia')),
+  payment_method text not null check (payment_method in ('efectivo','tarjeta','transferencia','cortesia','plataformas')),
   status text not null default 'pagado' check (status in ('pendiente','pagado','cancelado')),
   subtotal numeric(12,2) not null check (subtotal >= 0),
   discount_total numeric(12,2) not null default 0 check (discount_total >= 0),
@@ -17,6 +17,8 @@ create table if not exists public.admin_orders (
   notes text,
   captured_by text not null check (length(trim(captured_by)) > 0),
   created_at timestamptz not null default now(),
+  paid_at timestamptz,
+  updated_by text,
   updated_at timestamptz not null default now()
 );
 create table if not exists public.admin_order_items (
@@ -36,3 +38,17 @@ alter table public.admin_order_items enable row level security;
 -- Sin políticas públicas: las operaciones pasan por Netlify con service role y ADMIN_PIN.
 create index if not exists admin_orders_payment_method_idx on public.admin_orders(payment_method);
 create index if not exists admin_orders_captured_by_idx on public.admin_orders(captured_by);
+
+create table if not exists public.order_edit_history (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid not null references public.admin_orders(id) on delete cascade,
+  previous_data jsonb not null default '{}'::jsonb,
+  new_data jsonb not null default '{}'::jsonb,
+  reason text not null check (length(trim(reason)) > 0),
+  edited_by text not null default 'admin',
+  created_at timestamptz not null default now()
+);
+create index if not exists admin_orders_platform_pending_idx on public.admin_orders(payment_method, status, created_at desc) where payment_method = 'plataformas';
+create index if not exists admin_orders_paid_at_idx on public.admin_orders(paid_at desc);
+create index if not exists order_edit_history_order_id_idx on public.order_edit_history(order_id, created_at desc);
+alter table public.order_edit_history enable row level security;
