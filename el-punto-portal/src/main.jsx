@@ -637,7 +637,6 @@ function App() {
 
 function Header({ navigateTo }) {
   const [logoError, setLogoError] = useState(false);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const links = [
     ['inicio', 'Inicio'],
     ['ubicacion', 'Ubicación'],
@@ -648,7 +647,6 @@ function Header({ navigateTo }) {
 
   function handleHeaderNav(target) {
     navigateTo(target);
-    setMobileNavOpen(false);
   }
 
 
@@ -659,16 +657,7 @@ function Header({ navigateTo }) {
           {!logoError ? <img src="/images/logo-el-punto.png" alt="Logo El Punto" onError={() => setLogoError(true)} /> : <span className="brand-logo__fallback">El Punto</span>}
         </span>
       </button>
-      <button
-        className="site-nav__toggle"
-        type="button"
-        aria-expanded={mobileNavOpen}
-        aria-controls="site-nav-menu"
-        onClick={() => setMobileNavOpen((open) => !open)}
-      >
-        Navegación
-      </button>
-      <nav id="site-nav-menu" className={mobileNavOpen ? 'site-nav site-nav--open' : 'site-nav'}>
+      <nav className="site-nav">
         {links.map(([id, label]) => (
           <button key={id} className="site-nav__link" onClick={() => handleHeaderNav(id)}>{label}</button>
         ))}
