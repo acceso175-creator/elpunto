@@ -36,7 +36,7 @@ const PAYMENT_METHODS = [
   { value: 'pago_en_linea', label: 'Pago en línea' },
   { value: 'criptomonedas', label: 'Criptomonedas' }
 ];
-const ADMIN_PAYMENT_METHODS = [...PAYMENT_METHODS.slice(0, 3), { value: 'cortesia', label: 'Cortesía' }];
+const ADMIN_PAYMENT_METHODS = [...PAYMENT_METHODS.slice(0, 3), { value: 'plataformas', label: 'Plataformas' }, { value: 'cortesia', label: 'Cortesía' }];
 const BASE_CATEGORY_NAMES = ['Desayunos', 'Birria', 'Bebidas', 'Postres'];
 
 const PUBLIC_ROUTE_SECTIONS = {
@@ -341,6 +341,7 @@ function cartItemsMissingPrice(cart) {
 }
 
 function paymentLabel(value) {
+  if (value === 'plataformas') return 'Plataformas';
   return PAYMENT_METHODS.find((method) => method.value === value)?.label || 'Efectivo';
 }
 
@@ -1526,12 +1527,12 @@ function ManualOrderCapture({ menu, pin, onBack, onSaved }) {
   return <section className="section admin-order-screen"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Capturar pedido</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button className="button--ghost" onClick={() => { setCart([]); setLastOrder(null); }}>Nuevo pedido</button>{lastOrder && <button className="button--ghost" onClick={() => alert(`${lastOrder.order_number} · ${formatMoney(lastOrder.total)}`)}>Ver último pedido</button>}</div></div>
     <div className="admin-order-layout"><div className="admin-menu-picker"><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar producto por nombre…" />{categories.map((category) => <div key={category.id}><h3>{category.name}</h3><div className="admin-product-pick-grid">{category.items.map((product) => <article className="admin-product-pick" key={product.id}><strong>{product.name}</strong><span>{hasValidDiscount(product) && <del>{formatMoney(product.price)} </del>}{formatMoney(getEffectivePrice(product))}</span><p>{product.description}</p>{activeOptionGroups(product).map((group) => <fieldset key={group.id || group.name}><legend>{group.name}{group.required ? ' *' : ''}</legend>{group.options.map((option) => <button type="button" className={(selected[`${product.id}:${group.id || group.name}`] || []).some((item) => item.id === option.id) ? 'option-chip option-chip--selected' : 'option-chip'} onClick={() => toggleOption(product, group, option)} key={option.id}>{option.name}{option.priceDelta ? ` +${formatMoney(option.priceDelta)}` : ''}</button>)}</fieldset>)}<button type="button" onClick={() => add(product)}>Agregar</button></article>)}</div></div>)}</div>
       <aside className="admin-order-cart panel"><h3>Carrito</h3>{cart.length === 0 && <p className="small-note">Agrega productos para comenzar.</p>}{cart.map((item) => <div className="admin-cart-line" key={item.key}><strong>{item.productName}</strong><small>{selectedOptionsText(item.selectedOptions)}</small><div><button className="button--ghost" onClick={() => setCart(cart.map((row) => row.key === item.key ? { ...row, quantity: Math.max(1, row.quantity - 1) } : row))}>−</button><b>{item.quantity}</b><button className="button--ghost" onClick={() => setCart(cart.map((row) => row.key === item.key ? { ...row, quantity: row.quantity + 1 } : row))}>+</button><button className="button--ghost" onClick={() => setCart(cart.filter((row) => row.key !== item.key))}>Quitar</button></div><input placeholder="Notas: sin cebolla…" value={item.itemNotes} onChange={(e) => setCart(cart.map((row) => row.key === item.key ? { ...row, itemNotes: e.target.value } : row))} /><span>{formatMoney(item.unitPrice * item.quantity)}</span></div>)}<h3>Total: {formatMoney(total)}</h3>
-      <div className="form-grid one"><input placeholder="Nombre del cliente (opcional)" value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /><input placeholder="Teléfono (opcional)" value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} /><select value={form.orderType} onChange={(e) => setForm({ ...form, orderType: e.target.value })}>{['mostrador','domicilio','recoger'].map((v) => <option key={v}>{v}</option>)}</select><select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}>{ADMIN_PAYMENT_METHODS.map((v) => <option value={v.value} key={v.value}>{v.label}</option>)}</select><select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>{['pendiente','pagado','cancelado'].map((v) => <option key={v}>{v}</option>)}</select><input required placeholder="Capturado por *" value={form.capturedBy} onChange={(e) => setForm({ ...form, capturedBy: e.target.value })} /><textarea placeholder="Notas generales" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /><button onClick={save}>Guardar pedido</button><p className="small-note">{status}</p></div></aside></div></section>;
+      <div className="form-grid one"><input placeholder="Nombre del cliente (opcional)" value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /><input type="tel" inputMode="tel" autoComplete="tel" placeholder="Teléfono (opcional)" value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} /><select value={form.orderType} onChange={(e) => setForm({ ...form, orderType: e.target.value })}>{['mostrador','domicilio','recoger'].map((v) => <option key={v}>{v}</option>)}</select><select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, status: e.target.value === 'plataformas' ? 'pendiente' : form.status })}>{ADMIN_PAYMENT_METHODS.map((v) => <option value={v.value} key={v.value}>{v.label}</option>)}</select><select value={form.status} disabled={form.paymentMethod === 'plataformas'} onChange={(e) => setForm({ ...form, status: e.target.value })}>{['pendiente','pagado','cancelado'].map((v) => <option key={v}>{v}</option>)}</select><input required placeholder="Capturado por *" value={form.capturedBy} onChange={(e) => setForm({ ...form, capturedBy: e.target.value })} /><textarea placeholder="Notas generales" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /><button onClick={save}>Guardar pedido</button><p className="small-note">{status}</p></div></aside></div></section>;
 }
 
 function AdminCuts({ pin, onBack }) {
   const today = dateInputFromParts(...chihuahuaDateParts());
-  const [date, setDate] = useState(today); const [data, setData] = useState(null); const [status, setStatus] = useState(''); const [detail, setDetail] = useState(null);
+  const [date, setDate] = useState(today); const [data, setData] = useState(null); const [status, setStatus] = useState(''); const [expandedOrderId, setExpandedOrderId] = useState(null);
   const formattedDate = new Date(`${date}T12:00:00-06:00`).toLocaleDateString('es-MX', { timeZone: 'America/Chihuahua' });
   const title = date === today ? 'Corte del día' : `Corte del día: ${formattedDate}`;
   async function load(selectedDate = date) {
@@ -1552,13 +1553,237 @@ function AdminCuts({ pin, onBack }) {
   const summary = data?.summary || {};
   return <section className="section sales-history daily-cut"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>{title}</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button onClick={exportCutCsv}>Exportar corte CSV</button></div></div>
     <div className="panel history-filters"><div className="admin-actions"><label>Fecha <input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><button onClick={() => load()}>Actualizar corte</button></div><p className="small-note">{status}. Zona horaria: Chihuahua/México.</p></div>
-    {data && <><div className="metric-grid history-summary">{[['Total vendido','totalSold'],['Efectivo','efectivo'],['Tarjeta','tarjeta'],['Transferencia','transferencia'],['Cortesías','cortesia'],['Pedidos pagados','paidOrders'],['Pedidos pendientes','pendingOrders'],['Pedidos cancelados','canceledOrders'],['Número total de pedidos','totalOrders'],['Ticket promedio','averageTicket']].map(([label,key]) => <Metric key={key} label={label} value={String(key).includes('Orders') || key === 'totalOrders' ? summary[key] : formatMoney(summary[key])} />)}</div>{data.orders.length === 0 ? <div className="panel">No hay ventas en este periodo</div> : <>
+    {data && <><PendingPlatformsCard summary={summary} onShowDetail={() => setExpandedOrderId((data.orders || []).find((o) => o.payment_method === 'plataformas' && o.status === 'pendiente')?.id || null)} /><div className="metric-grid history-summary">{[['Ventas totales','salesTotal'],['Pagos cobrados','paymentsCollected'],['Pagos pendientes de plataformas','platformPendingTotal'],['Efectivo recibido','efectivo'],['Tarjeta','tarjeta'],['Transferencia','transferencia'],['Plataformas pagadas','platformPaid'],['Plataformas pendientes','platformPending'],['Cortesías','cortesia'],['Pedidos pagados','paidOrders'],['Pedidos pendientes','pendingOrders'],['Pedidos cancelados','canceledOrders'],['Número total de pedidos','totalOrders'],['Ticket promedio','averageTicket']].map(([label,key]) => <Metric key={key} label={label} value={String(key).includes('Orders') || key === 'totalOrders' ? summary[key] : formatMoney(summary[key])} />)}</div>{data.orders.length === 0 ? <div className="panel">No hay ventas en este periodo</div> : <>
       <div className="panel"><h3>Por método de pago</h3><div className="cut-grid">{ADMIN_PAYMENT_METHODS.map((method) => <p key={method.value}>{method.label}: <strong>{formatMoney(method.value === 'cortesia' ? summary.cortesia : summary[method.value])}</strong></p>)}</div></div>
       <HistoryTable title="Productos vendidos / más vendidos" headers={['Producto','Cantidad vendida','Total vendido','Ticket promedio','Cortesías']} rows={data.products.map((p) => [p.product,p.quantity,formatMoney(p.totalSold),formatMoney(p.averageTicket),p.courtesies])} />
       <HistoryTable title="Ventas por capturista" headers={['Capturista','Total vendido','Pedidos','Ticket promedio','Efectivo','Tarjeta','Transferencia','Cortesías','Cancelados']} rows={data.capturers.map((c) => [c.capturedBy,formatMoney(c.totalSold),c.paidOrders,formatMoney(c.averageTicket),formatMoney(c.efectivo),formatMoney(c.tarjeta),formatMoney(c.transferencia),formatMoney(c.cortesia),c.canceledOrders])} />
-      <div className="panel"><h3>Pedidos capturados del día</h3><div className="orders-table-wrap"><table className="orders-table"><thead><tr>{['Hora','Folio','Cliente','Total','Método de pago','Tipo','Estado','Capturado por','Detalle','Cancelar'].map((h) => <th key={h}>{h}</th>)}</tr></thead><tbody>{data.orders.map((o) => <tr key={o.id}><td>{new Date(o.created_at).toLocaleTimeString('es-MX')}</td><td>{o.order_number}</td><td>{o.customer_name || '—'}</td><td>{formatMoney(o.total)}</td><td>{o.payment_method}</td><td>{o.order_type}</td><td>{o.status}</td><td>{o.captured_by}</td><td><button className="button--ghost" onClick={() => setDetail(o)}>Ver detalle</button></td><td>{o.status !== 'cancelado' && <button className="button--ghost" onClick={() => cancelOrder(o.id)}>Cancelar</button>}</td></tr>)}</tbody></table></div></div>
-      {detail && <div className="panel"><div className="admin-header"><h3>Detalle {detail.order_number}</h3><button className="button--ghost" onClick={() => setDetail(null)}>Cerrar</button></div>{(detail.admin_order_items || []).map((item) => <p key={item.id}><strong>{item.quantity}× {item.product_name}</strong> · {formatMoney(item.unit_price)} · {selectedOptionsText(item.selected_options)} {item.item_notes && `· Notas: ${item.item_notes}`}</p>)}<p>Notas generales: {detail.notes || '—'}</p></div>}
+      <AdminOrdersTable title="Pedidos capturados del día" orders={data.orders} columns={[{ label: 'Hora', render: (o) => new Date(o.created_at).toLocaleTimeString('es-MX') }, { label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }, { label: 'Método de pago', render: (o) => paymentLabel(o.payment_method) }, { label: 'Tipo', render: (o) => o.order_type }, { label: 'Estado', render: (o) => <StatusBadge status={o.status} /> }, { label: 'Capturado por', render: (o) => o.captured_by || 'admin' }]} expandedId={expandedOrderId} setExpandedId={setExpandedOrderId} pin={pin} onSaved={() => load()} onCancel={cancelOrder} />
     </>}</>}</section>;
+}
+
+
+function StatusBadge({ status }) {
+  return <span className={`status-badge status-badge--${status === 'pagado' ? 'paid' : status === 'pendiente' ? 'pending' : 'muted'}`}>{status}</span>;
+}
+
+function PendingPlatformsCard({ summary = {}, onShowDetail }) {
+  return <div className="panel pending-platform-card"><p className="eyebrow">Pagos pendientes de plataformas</p><h3>{formatMoney(summary.platformPendingTotal || summary.platformPending || 0)}</h3><p>{summary.platformPendingOrders || 0} pedido(s) pendiente(s)</p>{onShowDetail && <button type="button" className="button--ghost" onClick={onShowDetail}>Ver detalle</button>}</div>;
+}
+
+function receiptLineTotal(item) { return Number(item.total_price ?? item.line_total ?? (Number(item.quantity || 0) * Number(item.unit_price || 0))) || 0; }
+function orderEdited(order) { return (order?.order_edit_history || []).length > 0; }
+function platformText(order) { return order?.platform || order?.platform_name || (order?.payment_method === 'plataformas' ? (order?.notes || '').match(/(uber|didi|rappi|platform|plataforma)[^\n,.]*/i)?.[0] : ''); }
+function latestEditReason(order) { const history = order?.order_edit_history || []; const last = history[0]; return last?.reason || last?.created_at || ''; }
+
+function ReceiptTicket({ order, className = '' }) {
+  const items = order?.admin_order_items || [];
+  const subtotal = Number(order?.subtotal ?? items.reduce((sum, item) => sum + receiptLineTotal(item), 0));
+  const discount = Number(order?.discount_total || 0);
+  const total = Number(order?.total ?? Math.max(0, subtotal - discount));
+  return <div className={`receipt-ticket ${className}`.trim()}>
+    <header className="receipt-ticket__header"><strong>El Punto – Food To Go</strong><span>Calle Ojinaga 410, Col. Centro, Chihuahua</span><span>Tel. {BUSINESS_PHONE_DISPLAY}</span><span>Pedido {order.order_number}</span><span>{order.created_at ? new Date(order.created_at).toLocaleString('es-MX') : ''}</span></header>
+    <div className="receipt-ticket__meta">{[order.customer_name && `Cliente: ${order.customer_name}`, order.order_type && `Tipo: ${order.order_type}`, order.payment_method && `Pago: ${paymentLabel(order.payment_method)}`, order.status && `Estado: ${order.status}`].filter(Boolean).map((line) => <span key={line}>{line}</span>)}</div>
+    <div className="receipt-ticket__items">{items.map((item) => <div className="receipt-ticket__item" key={item.id || `${item.product_name}-${item.quantity}`}><div><strong>{item.quantity}× {item.product_name}</strong>{selectedOptionsText(item.selected_options) !== 'Sin opciones' && <small>{selectedOptionsText(item.selected_options)}</small>}{item.item_notes && <small>Nota: {item.item_notes}</small>}</div><span>{formatMoney(receiptLineTotal(item))}</span><small>{formatMoney(item.unit_price)} c/u</small></div>)}</div>
+    <div className="receipt-ticket__totals"><span>Subtotal <b>{formatMoney(subtotal)}</b></span>{discount > 0 && <span>Descuento <b>-{formatMoney(discount)}</b></span>}<strong>Total <b>{formatMoney(total)}</b></strong></div>
+    {order.notes && <p className="receipt-ticket__notes">Notas: {order.notes}</p>}
+    <footer>Gracias por tu compra.</footer>
+  </div>;
+}
+
+
+const RECEIPT_WIDTH_MM = 80;
+const RECEIPT_CONTENT_WIDTH_MM = 72;
+const PX_PER_MM = 96 / 25.4;
+const MM_TO_PT = 72 / 25.4;
+
+function receiptStyles(pageHeightMm = 120) {
+  return `@page{size:${RECEIPT_WIDTH_MM}mm ${pageHeightMm}mm;margin:0}html,body{width:${RECEIPT_WIDTH_MM}mm;min-height:0;margin:0;padding:0;background:#fff}.receipt-ticket,.receipt-ticket *{box-sizing:border-box}.receipt-ticket{width:${RECEIPT_CONTENT_WIDTH_MM}mm;margin:0 auto;padding:3mm 2mm;color:#000;background:#fff;font-family:Arial,sans-serif;font-size:11px;line-height:1.3;overflow:visible}.receipt-ticket__header,.receipt-ticket footer{text-align:center;display:grid;gap:1mm}.receipt-ticket__header strong{font-size:15px}.receipt-ticket__meta,.receipt-ticket__items,.receipt-ticket__totals{display:grid;gap:1.5mm;padding:2mm 0;border-top:1px dashed #000}.receipt-ticket__item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2mm;break-inside:avoid;page-break-inside:avoid}.receipt-ticket__item small{display:block;grid-column:1/-1}.receipt-ticket__totals span,.receipt-ticket__totals strong{display:flex;justify-content:space-between;gap:4mm}.receipt-ticket__totals strong{font-size:15px;border-top:1px dashed #000;padding-top:1.5mm}.receipt-ticket__notes{border-top:1px dashed #000;padding-top:2mm;margin:0 0 2mm}`;
+}
+
+async function printReceipt(order) {
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.position = 'fixed'; iframe.style.right = '0'; iframe.style.bottom = '0'; iframe.style.width = '0'; iframe.style.height = '0'; iframe.style.border = '0';
+  document.body.appendChild(iframe);
+  const doc = iframe.contentDocument || iframe.contentWindow?.document;
+  if (!doc) return;
+  doc.open();
+  doc.write(`<!doctype html><html><head><meta charset="utf-8"><title>Ticket ${order.order_number || ''}</title><style id="receipt-print-style">${receiptStyles(120)}</style></head><body><div id="receipt-print-root"></div></body></html>`);
+  doc.close();
+  createRoot(doc.getElementById('receipt-print-root')).render(<ReceiptTicket order={order} />);
+  const win = iframe.contentWindow;
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  if (doc.fonts?.ready) await doc.fonts.ready;
+  const receipt = doc.querySelector('.receipt-ticket');
+  const contentHeightMm = (receipt?.scrollHeight || 0) / PX_PER_MM;
+  const finalHeightMm = Math.max(80, Math.ceil(contentHeightMm + 6));
+  doc.getElementById('receipt-print-style').textContent = receiptStyles(finalHeightMm);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  win?.focus(); win?.print();
+  window.setTimeout(() => iframe.remove(), 1200);
+}
+
+function wrapPdfText(text, maxChars = 38) {
+  const words = String(text || '').split(/\s+/); const lines = []; let line = '';
+  words.forEach((word) => { const next = line ? `${line} ${word}` : word; if (next.length > maxChars && line) { lines.push(line); line = word; } else line = next; });
+  if (line) lines.push(line); return lines;
+}
+
+function receiptPdfLines(order) {
+  const lines = [];
+  lines.push({ text: 'El Punto – Food To Go', align: 'center', bold: true, size: 14 });
+  lines.push({ text: 'Calle Ojinaga 410, Col. Centro, Chihuahua', align: 'center' });
+  lines.push({ text: `Tel. ${BUSINESS_PHONE_DISPLAY}`, align: 'center' });
+  lines.push({ text: `Pedido ${order.order_number}`, align: 'center' });
+  if (order.created_at) lines.push({ text: new Date(order.created_at).toLocaleString('es-MX'), align: 'center' });
+  lines.push({ sep: true });
+  [order.customer_name && `Cliente: ${order.customer_name}`, order.customer_phone && `Teléfono: ${order.customer_phone}`, order.delivery_address && `Dirección: ${order.delivery_address}`, order.order_type && `Tipo: ${order.order_type}`, order.payment_method && `Pago: ${paymentLabel(order.payment_method)}`, order.status && `Estado: ${order.status}`].filter(Boolean).forEach((text) => lines.push({ text }));
+  lines.push({ sep: true });
+  (order.admin_order_items || []).forEach((item) => { lines.push({ text: `${item.quantity}× ${item.product_name}`, bold: true, amount: formatMoney(receiptLineTotal(item)) }); const opts = selectedOptionsText(item.selected_options); if (opts !== 'Sin opciones') lines.push({ text: opts, indent: 2 }); if (item.item_notes) lines.push({ text: `Nota: ${item.item_notes}`, indent: 2 }); lines.push({ text: `${formatMoney(item.unit_price)} c/u`, indent: 2 }); });
+  lines.push({ sep: true });
+  const subtotal = Number(order.subtotal ?? (order.admin_order_items || []).reduce((sum, item) => sum + receiptLineTotal(item), 0)); const discount = Number(order.discount_total || 0); const total = Number(order.total ?? Math.max(0, subtotal - discount));
+  lines.push({ text: 'Subtotal', amount: formatMoney(subtotal) }); if (discount > 0) lines.push({ text: 'Descuento', amount: `-${formatMoney(discount)}` }); lines.push({ text: 'TOTAL', amount: formatMoney(total), bold: true, size: 15 });
+  if (order.notes) { lines.push({ sep: true }); lines.push({ text: `Notas: ${order.notes}` }); }
+  lines.push({ sep: true }); lines.push({ text: 'Gracias por tu compra.', align: 'center' });
+  return lines;
+}
+
+function receiptPdfLayout(order) {
+  const rows = [];
+  const pushText = (text, options = {}) => {
+    const maxChars = options.amount ? 27 : options.indent ? 36 : 39;
+    wrapPdfText(text, maxChars).forEach((line, index) => rows.push({ ...options, text: line, amount: index === 0 ? options.amount : '' }));
+  };
+  const pushSeparator = () => rows.push({ sep: true });
+  pushText('El Punto – Food To Go', { align: 'center', bold: true, size: 14, gap: 5.8 });
+  pushText('Calle Ojinaga 410, Col. Centro, Chihuahua', { align: 'center', size: 10, gap: 4.5 });
+  pushText(`Tel. ${BUSINESS_PHONE_DISPLAY}`, { align: 'center', size: 10, gap: 4.5 });
+  pushText(`Pedido ${order.order_number || ''}`, { align: 'center', bold: true, size: 10.5, gap: 4.8 });
+  if (order.created_at) pushText(new Date(order.created_at).toLocaleString('es-MX'), { align: 'center', size: 10, gap: 4.5 });
+  pushSeparator();
+  [order.customer_name && `Cliente: ${order.customer_name}`, order.customer_phone && `Teléfono: ${order.customer_phone}`, order.delivery_address && `Dirección: ${order.delivery_address}`, order.order_type && `Tipo: ${order.order_type}`, order.payment_method && `Pago: ${paymentLabel(order.payment_method)}`, order.status && `Estado: ${order.status}`].filter(Boolean).forEach((text) => pushText(text, { size: 10.5, gap: 4.7 }));
+  pushSeparator();
+  (order.admin_order_items || []).forEach((item) => {
+    pushText(`${item.quantity}× ${item.product_name}`, { bold: true, size: 10.7, amount: formatMoney(receiptLineTotal(item)), gap: 4.9 });
+    const options = selectedOptionsText(item.selected_options);
+    if (options !== 'Sin opciones') pushText(options, { indent: 3, size: 9.7, gap: 4.2 });
+    if (item.item_notes) pushText(`Nota: ${item.item_notes}`, { indent: 3, size: 9.7, gap: 4.2 });
+    pushText(`${formatMoney(item.unit_price)} c/u`, { indent: 3, size: 9.7, gap: 4.2 });
+  });
+  pushSeparator();
+  const subtotal = Number(order.subtotal ?? (order.admin_order_items || []).reduce((sum, item) => sum + receiptLineTotal(item), 0));
+  const discount = Number(order.discount_total || 0);
+  const total = Number(order.total ?? Math.max(0, subtotal - discount));
+  pushText('Subtotal', { size: 10.5, amount: formatMoney(subtotal), gap: 4.8 });
+  if (discount > 0) pushText('Descuento', { size: 10.5, amount: `-${formatMoney(discount)}`, gap: 4.8 });
+  pushText('TOTAL', { bold: true, size: 15, amount: formatMoney(total), gap: 6.2 });
+  if (order.notes) { pushSeparator(); pushText(`Notas: ${order.notes}`, { size: 10, gap: 4.5 }); }
+  pushSeparator();
+  pushText('Gracias por tu compra.', { align: 'center', size: 10.5, gap: 4.8 });
+  return rows;
+}
+
+function estimateReceiptPdfHeight(order) {
+  const contentHeight = receiptPdfLayout(order).reduce((sum, row) => sum + (row.sep ? 4.2 : row.gap || 4.6), 0);
+  return Math.max(80, Math.ceil(contentHeight + 10));
+}
+
+function pdfEscape(value) {
+  return String(value ?? '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\()]/g, '\\$&')
+    .replace(/[^\x20-\x7EñÑ]/g, '');
+}
+
+function approximatePdfTextWidth(text, size) {
+  return String(text || '').length * size * 0.43;
+}
+
+function buildReceiptPdf(order) {
+  const pageHeightMm = estimateReceiptPdfHeight(order);
+  const widthPt = RECEIPT_WIDTH_MM * MM_TO_PT;
+  const heightPt = pageHeightMm * MM_TO_PT;
+  const leftMm = 4;
+  const rightMm = 76;
+  const centerMm = RECEIPT_WIDTH_MM / 2;
+  let yMm = 6;
+  const ops = [];
+  const toPtX = (mm) => mm * MM_TO_PT;
+  const toPtY = (mmFromTop) => heightPt - (mmFromTop * MM_TO_PT);
+  const drawText = (text, xMm, yTopMm, size, bold = false) => {
+    ops.push('BT', `/${bold ? 'F2' : 'F1'} ${size} Tf`, `1 0 0 1 ${toPtX(xMm).toFixed(2)} ${toPtY(yTopMm).toFixed(2)} Tm`, `(${pdfEscape(text)}) Tj`, 'ET');
+  };
+  const drawLine = (yTopMm) => ops.push(`${toPtX(leftMm).toFixed(2)} ${toPtY(yTopMm).toFixed(2)} m ${toPtX(rightMm).toFixed(2)} ${toPtY(yTopMm).toFixed(2)} l S`);
+  receiptPdfLayout(order).forEach((row) => {
+    if (row.sep) { yMm += 1.5; drawLine(yMm); yMm += 2.7; return; }
+    const size = row.size || 10.5;
+    const textWidthMm = approximatePdfTextWidth(row.text, size) / MM_TO_PT;
+    const xMm = row.align === 'center' ? Math.max(leftMm, centerMm - textWidthMm / 2) : leftMm + (row.indent || 0);
+    drawText(row.text, xMm, yMm, size, row.bold);
+    if (row.amount) {
+      const amountWidthMm = approximatePdfTextWidth(row.amount, size) / MM_TO_PT;
+      drawText(row.amount, Math.max(leftMm, rightMm - amountWidthMm), yMm, size, row.bold);
+    }
+    yMm += row.gap || 4.6;
+  });
+  const stream = ops.join('\n');
+  const objects = [
+    `1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj`,
+    `2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj`,
+    `3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${widthPt.toFixed(2)} ${heightPt.toFixed(2)}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>endobj`,
+    `4 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj`,
+    `5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>endobj`,
+    `6 0 obj<< /Length ${stream.length} >>stream\n${stream}\nendstream endobj`
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  objects.forEach((obj) => { offsets.push(pdf.length); pdf += `${obj}\n`; });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  offsets.slice(1).forEach((offset) => { pdf += `${String(offset).padStart(10, '0')} 00000 n \n`; });
+  pdf += `trailer<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return pdf;
+}
+
+function downloadReceiptPdf(order) {
+  const blob = new Blob([buildReceiptPdf(order)], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ticket-${order.order_number || 'pedido'}.pdf`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+
+function OrderAccordionRow({ order, columns, expanded, onToggle, pin, onSaved, onCancel }) {
+  const [editing, setEditing] = useState(false); const [saving, setSaving] = useState(false); const [message, setMessage] = useState('');
+  const [phoneEditing, setPhoneEditing] = useState(false); const [phoneDraft, setPhoneDraft] = useState(order.customer_phone || ''); const [phoneStatus, setPhoneStatus] = useState('');
+  const toDraft = (o) => ({ customerName: o.customer_name || '', customerPhone: o.customer_phone || '', orderType: o.order_type || 'mostrador', paymentMethod: o.payment_method || 'efectivo', status: o.status || 'pagado', discountTotal: o.discount_total || 0, notes: o.notes || '', reason: '', items: (o.admin_order_items || []).map((item) => ({ key: item.id || createStableUuid(), productId: item.product_id, productName: item.product_name, quantity: item.quantity, unitPrice: item.unit_price, selectedOptionsText: selectedOptionsText(item.selected_options), selectedOptions: item.selected_options, itemNotes: item.item_notes || '' })) });
+  const [draft, setDraft] = useState(() => toDraft(order));
+  useEffect(() => { setDraft(toDraft(order)); setEditing(false); setMessage(''); setPhoneDraft(order.customer_phone || ''); setPhoneEditing(false); setPhoneStatus(''); }, [order?.id]);
+  const subtotal = draft.items.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unitPrice || 0), 0); const total = Math.max(0, subtotal - Number(draft.discountTotal || 0));
+  const patchItem = (key, patch) => setDraft((current) => ({ ...current, items: current.items.map((item) => item.key === key ? { ...item, ...patch } : item) }));
+  async function mark(action) { const verb = action === 'mark-paid' ? 'marcar como pagado' : 'revertir a pendiente'; if (!confirm(`¿Confirmas ${verb} este pedido?`)) return; setSaving(true); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', pin, body: { id: order.id, action, reason: verb, editedBy: 'admin' } }); setMessage('Estado actualizado.'); onSaved?.(result.order); } catch (error) { setMessage(error.message); } finally { setSaving(false); } }
+  async function saveEdit() { if (!draft.reason.trim()) return setMessage('Escribe una razón del cambio.'); if (!draft.items.length) return setMessage('El ticket no puede quedar vacío.'); if (!confirm('¿Guardar cambios en este ticket sin duplicar el pedido?')) return; setSaving(true); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', pin, body: { id: order.id, action: 'edit', ...draft, editedBy: 'admin' } }); setMessage('Ticket actualizado correctamente.'); onSaved?.(result.order); setEditing(false); } catch (error) { setMessage(error.message); } finally { setSaving(false); } }
+  async function savePhone() { const cleanPhone = String(phoneDraft || '').trim(); if (cleanPhone && !/^[+\d\s().-]{7,24}$/.test(cleanPhone)) return setPhoneStatus('Teléfono inválido. Usa dígitos, espacios y opcionalmente +.'); setSaving(true); setPhoneStatus('Guardando teléfono...'); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', pin, body: { id: order.id, action: 'update-phone', customerPhone: cleanPhone, reason: cleanPhone ? 'Actualización de teléfono del cliente' : 'Teléfono del cliente eliminado', editedBy: 'admin' } }); setPhoneStatus('Teléfono guardado.'); setPhoneEditing(false); onSaved?.(result.order); } catch (error) { setPhoneStatus(error.message); } finally { setSaving(false); } }
+  const productRows = order.admin_order_items || [];
+  const expandedContent = <div className="order-accordion"><div className="order-detail-grid"><section><h4>Encabezado</h4>{[order.order_number, order.created_at && new Date(order.created_at).toLocaleString('es-MX'), orderEdited(order) && 'Editado', order.status && `Estado: ${order.status}`, order.payment_method && `Pago: ${paymentLabel(order.payment_method)}`, platformText(order) && `Plataforma: ${platformText(order)}`].filter(Boolean).map((line) => <p key={line}>{line}</p>)}</section><section><h4>Cliente</h4>{[order.customer_name && `Nombre: ${order.customer_name}`, `Teléfono: ${order.customer_phone || 'No registrado'}`, order.order_type && `Entrega: ${order.order_type}`, order.delivery_address && `Dirección: ${order.delivery_address}`].filter(Boolean).map((line) => <p key={line}>{line}</p>)}<div className="phone-inline-editor">{phoneEditing ? <><input type="tel" inputMode="tel" autoComplete="tel" placeholder="614 123 4567" value={phoneDraft} onChange={(event) => setPhoneDraft(event.target.value)} disabled={saving} /><button type="button" onClick={savePhone} disabled={saving}>{saving ? 'Guardando...' : 'Guardar'}</button><button type="button" className="button--ghost" onClick={() => { setPhoneDraft(order.customer_phone || ''); setPhoneEditing(false); setPhoneStatus(''); }} disabled={saving}>Cancelar</button></> : <button type="button" className="button--ghost" onClick={() => setPhoneEditing(true)}>{order.customer_phone ? 'Editar teléfono' : 'Agregar teléfono'}</button>}{phoneStatus && <small>{phoneStatus}</small>}</div></section></div>
+    <section><h4>Productos</h4><div className="order-detail-items">{productRows.map((item) => <div className="order-detail-item" key={item.id}><div><strong>{item.quantity}× {item.product_name}</strong>{selectedOptionsText(item.selected_options) !== 'Sin opciones' && <small>{selectedOptionsText(item.selected_options)}</small>}{item.item_notes && <small>Nota: {item.item_notes}</small>}</div><span>{formatMoney(item.unit_price)} c/u</span><b>{formatMoney(receiptLineTotal(item))}</b></div>)}</div></section>
+    <section className="order-detail-totals"><span>Subtotal: <b>{formatMoney(order.subtotal || order.total)}</b></span>{Number(order.discount_total || 0) > 0 && <span>Descuento: <b>{formatMoney(order.discount_total)}</b></span>}<strong>Total final: {formatMoney(order.total)}</strong></section>
+    <section className="order-detail-extra">{[order.notes && `Notas: ${order.notes}`, order.captured_by && `Capturó: ${order.captured_by}`, order.paid_at && `Pagado: ${new Date(order.paid_at).toLocaleString('es-MX')}`, latestEditReason(order) && `Edición: ${latestEditReason(order)}`].filter(Boolean).map((line) => <p key={line}>{line}</p>)}</section>
+    <details className="receipt-preview"><summary>Vista previa de ticket</summary><ReceiptTicket order={order} /></details>
+    {editing && <div className="ticket-edit-form"><div className="form-grid"><input placeholder="Cliente" value={draft.customerName} onChange={(e) => setDraft({ ...draft, customerName: e.target.value })} /><input type="tel" inputMode="tel" autoComplete="tel" placeholder="Teléfono" value={draft.customerPhone} onChange={(e) => setDraft({ ...draft, customerPhone: e.target.value })} /><select value={draft.paymentMethod} onChange={(e) => setDraft({ ...draft, paymentMethod: e.target.value, status: e.target.value === 'plataformas' && draft.status !== 'pagado' ? 'pendiente' : draft.status })}>{ADMIN_PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</select><select value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value })}>{['pendiente','pagado','cancelado'].map((v) => <option key={v}>{v}</option>)}</select><input type="number" step="0.01" placeholder="Descuento" value={draft.discountTotal} onChange={(e) => setDraft({ ...draft, discountTotal: e.target.value })} /></div>{draft.items.map((item) => <div className="ticket-edit-line" key={item.key}><input value={item.productName} onChange={(e) => patchItem(item.key, { productName: e.target.value })} /><input type="number" min="1" value={item.quantity} onChange={(e) => patchItem(item.key, { quantity: Math.max(1, Number(e.target.value) || 1) })} /><input type="number" step="0.01" value={item.unitPrice} onChange={(e) => patchItem(item.key, { unitPrice: Number(e.target.value) || 0 })} /><input placeholder="Opciones/variantes" value={item.selectedOptionsText || ''} onChange={(e) => patchItem(item.key, { selectedOptionsText: e.target.value, selectedOptions: [{ name: e.target.value }] })} /><button className="button--danger" onClick={() => setDraft({ ...draft, items: draft.items.filter((row) => row.key !== item.key) })}>Quitar</button></div>)}<button className="button--ghost" onClick={() => setDraft({ ...draft, items: [...draft.items, { key: createStableUuid(), productName: '', quantity: 1, unitPrice: 0, selectedOptions: [], selectedOptionsText: '', itemNotes: '' }] })}>Agregar producto</button><textarea placeholder="Notas del pedido" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} /><textarea required placeholder="Razón breve del cambio *" value={draft.reason} onChange={(e) => setDraft({ ...draft, reason: e.target.value })} /><p><strong>Subtotal:</strong> {formatMoney(subtotal)} · <strong>Total:</strong> {formatMoney(total)}</p><button onClick={saveEdit} disabled={saving}>{saving ? 'Guardando...' : 'Guardar cambios'}</button></div>}
+    <div className="order-detail-actions"><button className="button--ghost" onClick={() => setEditing(!editing)} disabled={saving}>{editing ? 'Cancelar edición' : 'Editar ticket'}</button><button onClick={() => printReceipt(order)}>Imprimir ticket</button><button className="button--ghost" onClick={() => downloadReceiptPdf(order)}>Descargar PDF</button>{order.payment_method === 'plataformas' && order.status !== 'pagado' && <button onClick={() => mark('mark-paid')} disabled={saving}>Marcar como pagado</button>}{order.payment_method === 'plataformas' && order.status === 'pagado' && <button className="button--ghost" onClick={() => mark('mark-pending')} disabled={saving}>Revertir a pendiente</button>}{order.status !== 'cancelado' && <button className="button--danger" onClick={() => onCancel(order.id)}>Cancelar pedido</button>}<button className="button--ghost" onClick={onToggle}>Cerrar detalle</button></div>{message && <p className="small-note">{message}</p>}</div>;
+  return <React.Fragment><tr className={expanded ? 'order-row order-row--expanded' : 'order-row'}>{columns.map((column) => <td key={column.label} data-label={column.label}>{column.render(order)}</td>)}<td data-label="Detalle"><button className="button--ghost" onClick={(event) => { event.stopPropagation(); onToggle(); }}>{expanded ? 'Ocultar detalle ▲' : 'Ver detalle ▼'}</button></td></tr>{expanded && <tr className="order-detail-row"><td colSpan={columns.length + 1}>{expandedContent}</td></tr>}</React.Fragment>;
+}
+
+function AdminOrdersTable({ title, orders, columns, expandedId, setExpandedId, pin, onSaved, onCancel }) {
+  return <div className="panel"><h3>{title}</h3><div className="orders-table-wrap"><table className="orders-table admin-orders-table"><thead><tr>{[...columns.map((c) => c.label), 'Detalle'].map((h) => <th key={h}>{h}</th>)}</tr></thead><tbody>{orders.map((order) => <OrderAccordionRow key={order.id} order={order} columns={columns} expanded={expandedId === order.id} onToggle={() => setExpandedId(expandedId === order.id ? null : order.id)} pin={pin} onSaved={onSaved} onCancel={onCancel} />)}</tbody></table></div></div>;
+}
+
+function TicketDetailEditor({ order, pin, onClose, onSaved }) {
+  return <div className="panel"><AdminOrdersTable title="Detalle" orders={[order]} columns={[{ label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }]} expandedId={order.id} setExpandedId={(id) => !id && onClose?.()} pin={pin} onSaved={onSaved} onCancel={() => {}} /></div>;
 }
 
 function chihuahuaDateParts(date = new Date()) {
@@ -1586,7 +1811,7 @@ function csvEscape(value) {
 
 function SalesHistory({ pin, onBack }) {
   const [preset, setPreset] = useState('today'); const [range, setRange] = useState(() => historyPresetRange('today')); const [groupBy, setGroupBy] = useState('day');
-  const [data, setData] = useState(null); const [status, setStatus] = useState(''); const [detail, setDetail] = useState(null);
+  const [data, setData] = useState(null); const [status, setStatus] = useState(''); const [expandedOrderId, setExpandedOrderId] = useState(null);
   async function load(nextRange = range, nextGroupBy = groupBy) {
     try {
       setStatus('Cargando histórico...');
@@ -1605,10 +1830,9 @@ function SalesHistory({ pin, onBack }) {
   const summary = data?.summary || {};
   return <section className="section sales-history"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Histórico de ventas</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button onClick={exportCsv}>Exportar CSV</button></div></div>
     <div className="panel history-filters"><div className="admin-actions">{[['today','Hoy'],['yesterday','Ayer'],['thisWeek','Esta semana'],['lastWeek','Semana pasada'],['thisMonth','Este mes'],['lastMonth','Mes pasado'],['thisYear','Este año'],['lastYear','Año pasado']].map(([v,l]) => <button key={v} className={preset === v ? '' : 'button--ghost'} onClick={() => applyPreset(v)}>{l}</button>)}</div><div className="admin-actions"><label>Desde <input type="date" value={range.startDate} onChange={(e) => { setPreset('custom'); setRange({ ...range, startDate: e.target.value }); }} /></label><label>Hasta <input type="date" value={range.endDate} onChange={(e) => { setPreset('custom'); setRange({ ...range, endDate: e.target.value }); }} /></label><select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); load(range, e.target.value); }}><option value="day">Por día</option><option value="week">Por semana</option><option value="month">Por mes</option><option value="year">Por año</option></select><button onClick={() => load()}>Consultar</button></div><p className="small-note">{status}. Zona horaria: Chihuahua/México.</p></div>
-    {data && <><div className="metric-grid history-summary">{[['Total vendido','totalSold'],['Total efectivo','efectivo'],['Total tarjeta','tarjeta'],['Total transferencia','transferencia'],['Cortesías','cortesia'],['Pedidos pagados','paidOrders'],['Pedidos pendientes','pendingOrders'],['Pedidos cancelados','canceledOrders'],['Ticket promedio','averageTicket'],['Número total de pedidos','totalOrders'],['Total por domicilio','domicilio'],['Total mostrador','mostrador'],['Total recoger','recoger']].map(([label,key]) => <Metric key={key} label={label} value={String(key).includes('Orders') || key === 'totalOrders' ? summary[key] : formatMoney(summary[key])} />)}</div>{data.orders.length === 0 ? <div className="panel">No hay ventas en este periodo</div> : <>
+    {data && <><PendingPlatformsCard summary={summary} onShowDetail={() => setExpandedOrderId((data.orders || []).find((o) => o.payment_method === 'plataformas' && o.status === 'pendiente')?.id || null)} /><div className="metric-grid history-summary">{[['Total vendido','totalSold'],['Pagos cobrados','paymentsCollected'],['Pagos pendientes de plataformas','platformPendingTotal'],['Total efectivo','efectivo'],['Total tarjeta','tarjeta'],['Total transferencia','transferencia'],['Plataformas pagadas','platformPaid'],['Plataformas pendientes','platformPending'],['Cortesías','cortesia'],['Pedidos pagados','paidOrders'],['Pedidos pendientes','pendingOrders'],['Pedidos cancelados','canceledOrders'],['Ticket promedio','averageTicket'],['Número total de pedidos','totalOrders'],['Total por domicilio','domicilio'],['Total mostrador','mostrador'],['Total recoger','recoger']].map(([label,key]) => <Metric key={key} label={label} value={String(key).includes('Orders') || key === 'totalOrders' ? summary[key] : formatMoney(summary[key])} />)}</div>{data.orders.length === 0 ? <div className="panel">No hay ventas en este periodo</div> : <>
       <HistoryTable title="Ventas agrupadas" headers={['Periodo','Total vendido','Efectivo','Tarjeta','Transferencia','Cortesías','Pagados','Cancelados','Ticket']} rows={data.grouped.map((r) => [r.period,formatMoney(r.totalSold),formatMoney(r.efectivo),formatMoney(r.tarjeta),formatMoney(r.transferencia),formatMoney(r.cortesia),r.paidOrders,r.canceledOrders,formatMoney(r.averageTicket)])} />
-      <div className="panel"><h3>Histórico de pedidos</h3><div className="orders-table-wrap"><table className="orders-table"><thead><tr>{['Fecha y hora','Folio','Cliente','Total','Pago','Tipo','Estado','Capturado por','Detalle','Cancelar'].map((h) => <th key={h}>{h}</th>)}</tr></thead><tbody>{data.orders.map((o) => <tr key={o.id}><td>{new Date(o.created_at).toLocaleString('es-MX')}</td><td>{o.order_number}</td><td>{o.customer_name || '—'}</td><td>{formatMoney(o.total)}</td><td>{o.payment_method}</td><td>{o.order_type}</td><td>{o.status}</td><td>{o.captured_by}</td><td><button className="button--ghost" onClick={() => setDetail(o)}>Ver detalle</button></td><td>{o.status !== 'cancelado' && <button className="button--ghost" onClick={() => cancelOrder(o.id)}>Cancelar</button>}</td></tr>)}</tbody></table></div></div>
-      {detail && <div className="panel"><div className="admin-header"><h3>Detalle {detail.order_number}</h3><button className="button--ghost" onClick={() => setDetail(null)}>Cerrar</button></div>{(detail.admin_order_items || []).map((item) => <p key={item.id}><strong>{item.quantity}× {item.product_name}</strong> · {formatMoney(item.unit_price)} · {selectedOptionsText(item.selected_options)} {item.item_notes && `· Notas: ${item.item_notes}`}</p>)}<p>Notas generales: {detail.notes || '—'}</p></div>}
+      <AdminOrdersTable title="Histórico de pedidos" orders={data.orders} columns={[{ label: 'Fecha y hora', render: (o) => new Date(o.created_at).toLocaleString('es-MX') }, { label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }, { label: 'Pago', render: (o) => paymentLabel(o.payment_method) }, { label: 'Tipo', render: (o) => o.order_type }, { label: 'Estado', render: (o) => <StatusBadge status={o.status} /> }, { label: 'Capturado por', render: (o) => o.captured_by || 'admin' }]} expandedId={expandedOrderId} setExpandedId={setExpandedOrderId} pin={pin} onSaved={() => load()} onCancel={cancelOrder} />
       <HistoryTable title="Productos vendidos" headers={['Producto','Cantidad vendida','Total vendido','Ticket promedio','Cortesías']} rows={data.products.map((p) => [p.product,p.quantity,formatMoney(p.totalSold),formatMoney(p.averageTicket),p.courtesies])} />
       <HistoryTable title="Ventas por capturista" headers={['Capturista','Total vendido','Pedidos','Ticket promedio','Efectivo','Tarjeta','Transferencia','Cortesías','Cancelados']} rows={data.capturers.map((c) => [c.capturedBy,formatMoney(c.totalSold),c.paidOrders,formatMoney(c.averageTicket),formatMoney(c.efectivo),formatMoney(c.tarjeta),formatMoney(c.transferencia),formatMoney(c.cortesia),c.canceledOrders])} /></>}</>}</section>;
 }
@@ -1632,6 +1856,9 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   const [orders, setOrders] = useState([]);
   const [ordersStatus, setOrdersStatus] = useState('');
   const [adminView, setAdminView] = useState('inicio');
+  const [platformSummary, setPlatformSummary] = useState(null);
+  const [productFilterCategory, setProductFilterCategory] = useState('all');
+  const [productSearch, setProductSearch] = useState('');
 
   useEffect(() => {
     const refresh = () => setMetrics(readStorage(STORAGE.metrics, defaultMetrics()));
@@ -1647,6 +1874,10 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     }
     setUnlocked(pin === ADMIN_PIN);
     if (pin !== ADMIN_PIN) alert('PIN incorrecto. En modo local el PIN demo es 1234.');
+  }
+
+  async function loadPlatformSummary() {
+    try { const today = dateInputFromParts(...chihuahuaDateParts()); const end = new Date(`${today}T12:00:00-06:00`); end.setDate(end.getDate() + 1); const result = await adminRequest('admin-sales-history', { method: 'GET', pin, body: { startDate: `${today}T00:00:00-06:00`, endDate: end.toISOString(), groupBy: 'day' } }); setPlatformSummary(result.summary || null); } catch { setPlatformSummary(null); }
   }
 
   async function loadOrders() {
@@ -2003,6 +2234,9 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   if (adminView === 'cortes') return <AdminCuts pin={pin} onBack={() => setAdminView('inicio')} />;
   if (adminView === 'historico') return <SalesHistory pin={pin} onBack={() => setAdminView('inicio')} />;
 
+  const filteredProductMenu = menu.map((category) => ({ ...category, items: category.items.filter((item) => (productFilterCategory === 'all' || category.id === productFilterCategory) && item.name.toLowerCase().includes(productSearch.trim().toLowerCase())) })).filter((category) => category.items.length);
+  const filteredProductCount = filteredProductMenu.reduce((sum, category) => sum + category.items.length, 0);
+
   return (
     <section id="admin" className="section admin-grid">
       <div className="panel admin-full admin-primary-actions">
@@ -2056,6 +2290,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           {isSupabaseConfigured && dataSource !== 'supabase-admin' && <p className="small-note warning-note">Admin esperando datos reales de Supabase; no uses datos locales/cacheados para editar productos.</p>}
         </div>
       </div>
+
+      {platformSummary && <PendingPlatformsCard summary={platformSummary} onShowDetail={() => setAdminView('cortes')} />}
 
       <div className="panel metrics">
         <p className="eyebrow">Métricas</p>
@@ -2167,6 +2403,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           </div>
         ) : (
           <>
+            <div className="product-admin-filters"><label>Categoría<select value={productFilterCategory} onChange={(event) => setProductFilterCategory(event.target.value)}><option value="all">Todas las categorías</option>{adminCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label>Buscar producto<input value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="Nombre del producto…" /></label><span className="small-note">{filteredProductCount} resultado(s)</span></div>
             <div className="add-product">
               <select value={newProduct.categoryId} onChange={(event) => setNewProduct({ ...newProduct, categoryId: event.target.value, categoryName: '' })}>
                 {adminCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
@@ -2182,7 +2419,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
               <button onClick={addProduct}>Agregar</button>
             </div>
 
-            {menu.map((category) => (
+            {filteredProductCount === 0 && <div className="empty-state">No existen productos que coincidan con la búsqueda y categoría seleccionadas.</div>}
+            {filteredProductMenu.map((category) => (
               <div key={category.id} className="admin-category">
                 <h3>{category.name}</h3>
                 {category.items.map((item) => (
