@@ -1648,28 +1648,113 @@ function receiptPdfLines(order) {
   return lines;
 }
 
-function estimateReceiptPdfHeight(order) {
-  let height = 8;
-  receiptPdfLines(order).forEach((line) => { if (line.sep) height += 4; else height += wrapPdfText(line.text, line.amount ? 26 : 38).length * (line.size && line.size >= 14 ? 6 : 5); });
-  return Math.max(80, Math.ceil(height + 6));
+function receiptPdfLayout(order) {
+  const rows = [];
+  const pushText = (text, options = {}) => {
+    const maxChars = options.amount ? 27 : options.indent ? 36 : 39;
+    wrapPdfText(text, maxChars).forEach((line, index) => rows.push({ ...options, text: line, amount: index === 0 ? options.amount : '' }));
+  };
+  const pushSeparator = () => rows.push({ sep: true });
+  pushText('El Punto – Food To Go', { align: 'center', bold: true, size: 14, gap: 5.8 });
+  pushText('Calle Ojinaga 410, Col. Centro, Chihuahua', { align: 'center', size: 10, gap: 4.5 });
+  pushText(`Tel. ${BUSINESS_PHONE_DISPLAY}`, { align: 'center', size: 10, gap: 4.5 });
+  pushText(`Pedido ${order.order_number || ''}`, { align: 'center', bold: true, size: 10.5, gap: 4.8 });
+  if (order.created_at) pushText(new Date(order.created_at).toLocaleString('es-MX'), { align: 'center', size: 10, gap: 4.5 });
+  pushSeparator();
+  [order.customer_name && `Cliente: ${order.customer_name}`, order.customer_phone && `Teléfono: ${order.customer_phone}`, order.delivery_address && `Dirección: ${order.delivery_address}`, order.order_type && `Tipo: ${order.order_type}`, order.payment_method && `Pago: ${paymentLabel(order.payment_method)}`, order.status && `Estado: ${order.status}`].filter(Boolean).forEach((text) => pushText(text, { size: 10.5, gap: 4.7 }));
+  pushSeparator();
+  (order.admin_order_items || []).forEach((item) => {
+    pushText(`${item.quantity}× ${item.product_name}`, { bold: true, size: 10.7, amount: formatMoney(receiptLineTotal(item)), gap: 4.9 });
+    const options = selectedOptionsText(item.selected_options);
+    if (options !== 'Sin opciones') pushText(options, { indent: 3, size: 9.7, gap: 4.2 });
+    if (item.item_notes) pushText(`Nota: ${item.item_notes}`, { indent: 3, size: 9.7, gap: 4.2 });
+    pushText(`${formatMoney(item.unit_price)} c/u`, { indent: 3, size: 9.7, gap: 4.2 });
+  });
+  pushSeparator();
+  const subtotal = Number(order.subtotal ?? (order.admin_order_items || []).reduce((sum, item) => sum + receiptLineTotal(item), 0));
+  const discount = Number(order.discount_total || 0);
+  const total = Number(order.total ?? Math.max(0, subtotal - discount));
+  pushText('Subtotal', { size: 10.5, amount: formatMoney(subtotal), gap: 4.8 });
+  if (discount > 0) pushText('Descuento', { size: 10.5, amount: `-${formatMoney(discount)}`, gap: 4.8 });
+  pushText('TOTAL', { bold: true, size: 15, amount: formatMoney(total), gap: 6.2 });
+  if (order.notes) { pushSeparator(); pushText(`Notas: ${order.notes}`, { size: 10, gap: 4.5 }); }
+  pushSeparator();
+  pushText('Gracias por tu compra.', { align: 'center', size: 10.5, gap: 4.8 });
+  return rows;
 }
 
-function pdfEscape(value) { return String(value ?? '').replace(/[\\()]/g, '\\$&').replace(/[^\x20-\x7EáéíóúÁÉÍÓÚñÑüÜ¿¡]/g, ''); }
+function estimateReceiptPdfHeight(order) {
+  const contentHeight = receiptPdfLayout(order).reduce((sum, row) => sum + (row.sep ? 4.2 : row.gap || 4.6), 0);
+  return Math.max(80, Math.ceil(contentHeight + 10));
+}
+
+function pdfEscape(value) {
+  return String(value ?? '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\()]/g, '\\$&')
+    .replace(/[^\x20-\x7EñÑ]/g, '');
+}
+
+function approximatePdfTextWidth(text, size) {
+  return String(text || '').length * size * 0.43;
+}
 
 function buildReceiptPdf(order) {
-  const pageHeightMm = estimateReceiptPdfHeight(order); const widthPt = RECEIPT_WIDTH_MM * MM_TO_PT; const heightPt = pageHeightMm * MM_TO_PT; let y = heightPt - 14; const ops = ['BT'];
-  const addText = (text, x, size = 10.5, bold = false) => { ops.push(`/${bold ? 'F2' : 'F1'} ${size} Tf ${x.toFixed(2)} ${y.toFixed(2)} Td (${pdfEscape(text)}) Tj ${(-x).toFixed(2)} 0 Td`); };
-  const addLine = () => { ops.push('ET', `4 ${y.toFixed(2)} m ${(widthPt - 4).toFixed(2)} ${y.toFixed(2)} l S`, 'BT'); y -= 8; };
-  receiptPdfLines(order).forEach((line) => { if (line.sep) { y -= 2; addLine(); return; } const size = line.size || 10.5; const wrapped = wrapPdfText(line.text, line.amount ? 26 : 38); wrapped.forEach((part, index) => { const x = line.align === 'center' ? Math.max(4, (widthPt - (part.length * size * 0.45)) / 2) : (4 + (line.indent || 0) * MM_TO_PT); addText(part, x, size, line.bold); if (line.amount && index === 0) addText(line.amount, widthPt - 34, size, line.bold); y -= size >= 14 ? 14 : 11; }); });
-  ops.push('ET'); const stream = ops.join('\n');
-  const objects = [`1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj`, `2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj`, `3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${widthPt.toFixed(2)} ${heightPt.toFixed(2)}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>endobj`, `4 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj`, `5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>endobj`, `6 0 obj<< /Length ${stream.length} >>stream\n${stream}\nendstream endobj`];
-  let pdf = '%PDF-1.4\n'; const offsets = [0]; objects.forEach((obj) => { offsets.push(pdf.length); pdf += `${obj}\n`; }); const xref = pdf.length; pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`; offsets.slice(1).forEach((offset) => { pdf += `${String(offset).padStart(10, '0')} 00000 n \n`; }); pdf += `trailer<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  const pageHeightMm = estimateReceiptPdfHeight(order);
+  const widthPt = RECEIPT_WIDTH_MM * MM_TO_PT;
+  const heightPt = pageHeightMm * MM_TO_PT;
+  const leftMm = 4;
+  const rightMm = 76;
+  const centerMm = RECEIPT_WIDTH_MM / 2;
+  let yMm = 6;
+  const ops = [];
+  const toPtX = (mm) => mm * MM_TO_PT;
+  const toPtY = (mmFromTop) => heightPt - (mmFromTop * MM_TO_PT);
+  const drawText = (text, xMm, yTopMm, size, bold = false) => {
+    ops.push('BT', `/${bold ? 'F2' : 'F1'} ${size} Tf`, `1 0 0 1 ${toPtX(xMm).toFixed(2)} ${toPtY(yTopMm).toFixed(2)} Tm`, `(${pdfEscape(text)}) Tj`, 'ET');
+  };
+  const drawLine = (yTopMm) => ops.push(`${toPtX(leftMm).toFixed(2)} ${toPtY(yTopMm).toFixed(2)} m ${toPtX(rightMm).toFixed(2)} ${toPtY(yTopMm).toFixed(2)} l S`);
+  receiptPdfLayout(order).forEach((row) => {
+    if (row.sep) { yMm += 1.5; drawLine(yMm); yMm += 2.7; return; }
+    const size = row.size || 10.5;
+    const textWidthMm = approximatePdfTextWidth(row.text, size) / MM_TO_PT;
+    const xMm = row.align === 'center' ? Math.max(leftMm, centerMm - textWidthMm / 2) : leftMm + (row.indent || 0);
+    drawText(row.text, xMm, yMm, size, row.bold);
+    if (row.amount) {
+      const amountWidthMm = approximatePdfTextWidth(row.amount, size) / MM_TO_PT;
+      drawText(row.amount, Math.max(leftMm, rightMm - amountWidthMm), yMm, size, row.bold);
+    }
+    yMm += row.gap || 4.6;
+  });
+  const stream = ops.join('\n');
+  const objects = [
+    `1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj`,
+    `2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj`,
+    `3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${widthPt.toFixed(2)} ${heightPt.toFixed(2)}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>endobj`,
+    `4 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj`,
+    `5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>endobj`,
+    `6 0 obj<< /Length ${stream.length} >>stream\n${stream}\nendstream endobj`
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  objects.forEach((obj) => { offsets.push(pdf.length); pdf += `${obj}\n`; });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  offsets.slice(1).forEach((offset) => { pdf += `${String(offset).padStart(10, '0')} 00000 n \n`; });
+  pdf += `trailer<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
   return pdf;
 }
 
 function downloadReceiptPdf(order) {
-  const blob = new Blob([buildReceiptPdf(order)], { type: 'application/pdf' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `ticket-${order.order_number || 'pedido'}.pdf`; a.click(); URL.revokeObjectURL(url);
+  const blob = new Blob([buildReceiptPdf(order)], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ticket-${order.order_number || 'pedido'}.pdf`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
+
 
 function OrderAccordionRow({ order, columns, expanded, onToggle, pin, onSaved, onCancel }) {
   const [editing, setEditing] = useState(false); const [saving, setSaving] = useState(false); const [message, setMessage] = useState('');
