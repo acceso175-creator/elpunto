@@ -662,7 +662,7 @@ function Header({ navigateTo }) {
           <button key={id} className="site-nav__link" onClick={() => handleHeaderNav(id)}>{label}</button>
         ))}
       </nav>
-      <button className="site-header__cta" onClick={() => navigateTo('menu')}>Hacer pedido</button>
+      <button className="site-header__cta" onClick={() => handleHeaderNav('menu')}>Hacer pedido</button>
     </header>
   );
 }
