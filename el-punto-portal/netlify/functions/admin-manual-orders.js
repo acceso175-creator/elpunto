@@ -29,7 +29,7 @@ export async function handler(event) {
     const supabase = getSupabaseAdmin();
     if (event.httpMethod === 'GET') {
       const from = event.queryStringParameters?.from; const to = event.queryStringParameters?.to; const paymentStatus = event.queryStringParameters?.paymentStatus;
-      let query = supabase.from('admin_orders').select('*, admin_order_items(*), order_edit_history(id, created_at)').order('created_at', { ascending: false }).limit(500);
+      let query = supabase.from('admin_orders').select('*, admin_order_items(*), order_edit_history(id, reason, edited_by, created_at)').order('created_at', { ascending: false }).limit(500);
       if (from) query = query.gte('created_at', from); if (to) query = query.lt('created_at', to); if (paymentStatus) query = query.eq('status', paymentStatus);
       const { data, error } = await query; if (error) throw error;
       return json(200, { orders: data || [] });

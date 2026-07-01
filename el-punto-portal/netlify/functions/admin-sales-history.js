@@ -30,7 +30,7 @@ export async function handler(event) {
     const pin = event.headers['x-admin-pin']; if (!validateAdminPin(pin)) return json(401, { error: 'PIN de admin inválido.' });
     const qs = event.queryStringParameters || {}; if (!qs.startDate || !qs.endDate) return json(400, { error: 'Fechas requeridas.' });
     const supabase = getSupabaseAdmin();
-    let query = supabase.from('admin_orders').select('*, admin_order_items(*), order_edit_history(id, created_at)').gte('created_at', qs.startDate).lt('created_at', qs.endDate).order('created_at', { ascending: false }).limit(5000);
+    let query = supabase.from('admin_orders').select('*, admin_order_items(*), order_edit_history(id, reason, edited_by, created_at)').gte('created_at', qs.startDate).lt('created_at', qs.endDate).order('created_at', { ascending: false }).limit(5000);
     if (qs.status) query = query.eq('status', qs.status); if (qs.paymentMethod) query = query.eq('payment_method', qs.paymentMethod);
     const { data, error } = await query; if (error) throw error;
     const orders = data || []; const summary = emptyStats(); const grouped = new Map(); const productMap = new Map(); const capturerMap = new Map();
