@@ -1535,7 +1535,6 @@ main { padding-top: 84px; }
 .receipt-ticket__totals span, .receipt-ticket__totals strong { display:flex; justify-content:space-between; gap:4mm; }
 .receipt-ticket__totals strong { font-size: 14px; border-top:1px dashed #000; padding-top:1.5mm; }
 .receipt-ticket__notes { border-top:1px dashed #000; padding-top:2mm; margin:0 0 2mm; }
-.printable-receipt { display:none; }
 @media (max-width: 760px) {
   .admin-orders-table .order-row { margin-bottom:0; border-bottom-left-radius:0; border-bottom-right-radius:0; }
   .admin-orders-table .order-detail-row { margin-top:0; border-top:0; border-top-left-radius:0; border-top-right-radius:0; }
@@ -1546,10 +1545,3 @@ main { padding-top: 84px; }
   .order-detail-actions button { width:100%; }
 }
 @media (max-width: 480px) { .order-detail-actions { grid-template-columns:1fr; } }
-@media print {
-  @page { size: 80mm auto; margin: 2mm; }
-  body * { visibility: hidden !important; }
-  .printable-receipt, .printable-receipt * { visibility: visible !important; }
-  .printable-receipt { display:block !important; position:absolute; left:0; top:0; width:76mm; max-width:76mm; margin:0; padding:0; }
-  .printable-receipt.receipt-ticket { padding: 2mm; }
-}

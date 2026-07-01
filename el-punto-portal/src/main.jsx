@@ -1590,6 +1590,87 @@ function ReceiptTicket({ order, className = '' }) {
   </div>;
 }
 
+
+const RECEIPT_WIDTH_MM = 80;
+const RECEIPT_CONTENT_WIDTH_MM = 72;
+const PX_PER_MM = 96 / 25.4;
+const MM_TO_PT = 72 / 25.4;
+
+function receiptStyles(pageHeightMm = 120) {
+  return `@page{size:${RECEIPT_WIDTH_MM}mm ${pageHeightMm}mm;margin:0}html,body{width:${RECEIPT_WIDTH_MM}mm;min-height:0;margin:0;padding:0;background:#fff}.receipt-ticket,.receipt-ticket *{box-sizing:border-box}.receipt-ticket{width:${RECEIPT_CONTENT_WIDTH_MM}mm;margin:0 auto;padding:3mm 2mm;color:#000;background:#fff;font-family:Arial,sans-serif;font-size:11px;line-height:1.3;overflow:visible}.receipt-ticket__header,.receipt-ticket footer{text-align:center;display:grid;gap:1mm}.receipt-ticket__header strong{font-size:15px}.receipt-ticket__meta,.receipt-ticket__items,.receipt-ticket__totals{display:grid;gap:1.5mm;padding:2mm 0;border-top:1px dashed #000}.receipt-ticket__item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2mm;break-inside:avoid;page-break-inside:avoid}.receipt-ticket__item small{display:block;grid-column:1/-1}.receipt-ticket__totals span,.receipt-ticket__totals strong{display:flex;justify-content:space-between;gap:4mm}.receipt-ticket__totals strong{font-size:15px;border-top:1px dashed #000;padding-top:1.5mm}.receipt-ticket__notes{border-top:1px dashed #000;padding-top:2mm;margin:0 0 2mm}`;
+}
+
+async function printReceipt(order) {
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.position = 'fixed'; iframe.style.right = '0'; iframe.style.bottom = '0'; iframe.style.width = '0'; iframe.style.height = '0'; iframe.style.border = '0';
+  document.body.appendChild(iframe);
+  const doc = iframe.contentDocument || iframe.contentWindow?.document;
+  if (!doc) return;
+  doc.open();
+  doc.write(`<!doctype html><html><head><meta charset="utf-8"><title>Ticket ${order.order_number || ''}</title><style id="receipt-print-style">${receiptStyles(120)}</style></head><body><div id="receipt-print-root"></div></body></html>`);
+  doc.close();
+  createRoot(doc.getElementById('receipt-print-root')).render(<ReceiptTicket order={order} />);
+  const win = iframe.contentWindow;
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  if (doc.fonts?.ready) await doc.fonts.ready;
+  const receipt = doc.querySelector('.receipt-ticket');
+  const contentHeightMm = (receipt?.scrollHeight || 0) / PX_PER_MM;
+  const finalHeightMm = Math.max(80, Math.ceil(contentHeightMm + 6));
+  doc.getElementById('receipt-print-style').textContent = receiptStyles(finalHeightMm);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  win?.focus(); win?.print();
+  window.setTimeout(() => iframe.remove(), 1200);
+}
+
+function wrapPdfText(text, maxChars = 38) {
+  const words = String(text || '').split(/\s+/); const lines = []; let line = '';
+  words.forEach((word) => { const next = line ? `${line} ${word}` : word; if (next.length > maxChars && line) { lines.push(line); line = word; } else line = next; });
+  if (line) lines.push(line); return lines;
+}
+
+function receiptPdfLines(order) {
+  const lines = [];
+  lines.push({ text: 'El Punto – Food To Go', align: 'center', bold: true, size: 14 });
+  lines.push({ text: 'Calle Ojinaga 410, Col. Centro, Chihuahua', align: 'center' });
+  lines.push({ text: `Tel. ${BUSINESS_PHONE_DISPLAY}`, align: 'center' });
+  lines.push({ text: `Pedido ${order.order_number}`, align: 'center' });
+  if (order.created_at) lines.push({ text: new Date(order.created_at).toLocaleString('es-MX'), align: 'center' });
+  lines.push({ sep: true });
+  [order.customer_name && `Cliente: ${order.customer_name}`, order.customer_phone && `Teléfono: ${order.customer_phone}`, order.delivery_address && `Dirección: ${order.delivery_address}`, order.order_type && `Tipo: ${order.order_type}`, order.payment_method && `Pago: ${paymentLabel(order.payment_method)}`, order.status && `Estado: ${order.status}`].filter(Boolean).forEach((text) => lines.push({ text }));
+  lines.push({ sep: true });
+  (order.admin_order_items || []).forEach((item) => { lines.push({ text: `${item.quantity}× ${item.product_name}`, bold: true, amount: formatMoney(receiptLineTotal(item)) }); const opts = selectedOptionsText(item.selected_options); if (opts !== 'Sin opciones') lines.push({ text: opts, indent: 2 }); if (item.item_notes) lines.push({ text: `Nota: ${item.item_notes}`, indent: 2 }); lines.push({ text: `${formatMoney(item.unit_price)} c/u`, indent: 2 }); });
+  lines.push({ sep: true });
+  const subtotal = Number(order.subtotal ?? (order.admin_order_items || []).reduce((sum, item) => sum + receiptLineTotal(item), 0)); const discount = Number(order.discount_total || 0); const total = Number(order.total ?? Math.max(0, subtotal - discount));
+  lines.push({ text: 'Subtotal', amount: formatMoney(subtotal) }); if (discount > 0) lines.push({ text: 'Descuento', amount: `-${formatMoney(discount)}` }); lines.push({ text: 'TOTAL', amount: formatMoney(total), bold: true, size: 15 });
+  if (order.notes) { lines.push({ sep: true }); lines.push({ text: `Notas: ${order.notes}` }); }
+  lines.push({ sep: true }); lines.push({ text: 'Gracias por tu compra.', align: 'center' });
+  return lines;
+}
+
+function estimateReceiptPdfHeight(order) {
+  let height = 8;
+  receiptPdfLines(order).forEach((line) => { if (line.sep) height += 4; else height += wrapPdfText(line.text, line.amount ? 26 : 38).length * (line.size && line.size >= 14 ? 6 : 5); });
+  return Math.max(80, Math.ceil(height + 6));
+}
+
+function pdfEscape(value) { return String(value ?? '').replace(/[\\()]/g, '\\$&').replace(/[^\x20-\x7EáéíóúÁÉÍÓÚñÑüÜ¿¡]/g, ''); }
+
+function buildReceiptPdf(order) {
+  const pageHeightMm = estimateReceiptPdfHeight(order); const widthPt = RECEIPT_WIDTH_MM * MM_TO_PT; const heightPt = pageHeightMm * MM_TO_PT; let y = heightPt - 14; const ops = ['BT'];
+  const addText = (text, x, size = 10.5, bold = false) => { ops.push(`/${bold ? 'F2' : 'F1'} ${size} Tf ${x.toFixed(2)} ${y.toFixed(2)} Td (${pdfEscape(text)}) Tj ${(-x).toFixed(2)} 0 Td`); };
+  const addLine = () => { ops.push('ET', `4 ${y.toFixed(2)} m ${(widthPt - 4).toFixed(2)} ${y.toFixed(2)} l S`, 'BT'); y -= 8; };
+  receiptPdfLines(order).forEach((line) => { if (line.sep) { y -= 2; addLine(); return; } const size = line.size || 10.5; const wrapped = wrapPdfText(line.text, line.amount ? 26 : 38); wrapped.forEach((part, index) => { const x = line.align === 'center' ? Math.max(4, (widthPt - (part.length * size * 0.45)) / 2) : (4 + (line.indent || 0) * MM_TO_PT); addText(part, x, size, line.bold); if (line.amount && index === 0) addText(line.amount, widthPt - 34, size, line.bold); y -= size >= 14 ? 14 : 11; }); });
+  ops.push('ET'); const stream = ops.join('\n');
+  const objects = [`1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj`, `2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj`, `3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${widthPt.toFixed(2)} ${heightPt.toFixed(2)}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>endobj`, `4 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj`, `5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>endobj`, `6 0 obj<< /Length ${stream.length} >>stream\n${stream}\nendstream endobj`];
+  let pdf = '%PDF-1.4\n'; const offsets = [0]; objects.forEach((obj) => { offsets.push(pdf.length); pdf += `${obj}\n`; }); const xref = pdf.length; pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`; offsets.slice(1).forEach((offset) => { pdf += `${String(offset).padStart(10, '0')} 00000 n \n`; }); pdf += `trailer<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return pdf;
+}
+
+function downloadReceiptPdf(order) {
+  const blob = new Blob([buildReceiptPdf(order)], { type: 'application/pdf' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `ticket-${order.order_number || 'pedido'}.pdf`; a.click(); URL.revokeObjectURL(url);
+}
+
 function OrderAccordionRow({ order, columns, expanded, onToggle, pin, onSaved, onCancel }) {
   const [editing, setEditing] = useState(false); const [saving, setSaving] = useState(false); const [message, setMessage] = useState('');
   const toDraft = (o) => ({ customerName: o.customer_name || '', customerPhone: o.customer_phone || '', orderType: o.order_type || 'mostrador', paymentMethod: o.payment_method || 'efectivo', status: o.status || 'pagado', discountTotal: o.discount_total || 0, notes: o.notes || '', reason: '', items: (o.admin_order_items || []).map((item) => ({ key: item.id || createStableUuid(), productId: item.product_id, productName: item.product_name, quantity: item.quantity, unitPrice: item.unit_price, selectedOptionsText: selectedOptionsText(item.selected_options), selectedOptions: item.selected_options, itemNotes: item.item_notes || '' })) });
@@ -1599,7 +1680,6 @@ function OrderAccordionRow({ order, columns, expanded, onToggle, pin, onSaved, o
   const patchItem = (key, patch) => setDraft((current) => ({ ...current, items: current.items.map((item) => item.key === key ? { ...item, ...patch } : item) }));
   async function mark(action) { const verb = action === 'mark-paid' ? 'marcar como pagado' : 'revertir a pendiente'; if (!confirm(`¿Confirmas ${verb} este pedido?`)) return; setSaving(true); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', pin, body: { id: order.id, action, reason: verb, editedBy: 'admin' } }); setMessage('Estado actualizado.'); onSaved?.(result.order); } catch (error) { setMessage(error.message); } finally { setSaving(false); } }
   async function saveEdit() { if (!draft.reason.trim()) return setMessage('Escribe una razón del cambio.'); if (!draft.items.length) return setMessage('El ticket no puede quedar vacío.'); if (!confirm('¿Guardar cambios en este ticket sin duplicar el pedido?')) return; setSaving(true); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', pin, body: { id: order.id, action: 'edit', ...draft, editedBy: 'admin' } }); setMessage('Ticket actualizado correctamente.'); onSaved?.(result.order); setEditing(false); } catch (error) { setMessage(error.message); } finally { setSaving(false); } }
-  function printTicket() { window.setTimeout(() => window.print(), 0); }
   const productRows = order.admin_order_items || [];
   const expandedContent = <div className="order-accordion"><div className="order-detail-grid"><section><h4>Encabezado</h4>{[order.order_number, order.created_at && new Date(order.created_at).toLocaleString('es-MX'), orderEdited(order) && 'Editado', order.status && `Estado: ${order.status}`, order.payment_method && `Pago: ${paymentLabel(order.payment_method)}`, platformText(order) && `Plataforma: ${platformText(order)}`].filter(Boolean).map((line) => <p key={line}>{line}</p>)}</section><section><h4>Cliente</h4>{[order.customer_name && `Nombre: ${order.customer_name}`, order.customer_phone && `Teléfono: ${order.customer_phone}`, order.order_type && `Entrega: ${order.order_type}`, order.delivery_address && `Dirección: ${order.delivery_address}`].filter(Boolean).map((line) => <p key={line}>{line}</p>)}</section></div>
     <section><h4>Productos</h4><div className="order-detail-items">{productRows.map((item) => <div className="order-detail-item" key={item.id}><div><strong>{item.quantity}× {item.product_name}</strong>{selectedOptionsText(item.selected_options) !== 'Sin opciones' && <small>{selectedOptionsText(item.selected_options)}</small>}{item.item_notes && <small>Nota: {item.item_notes}</small>}</div><span>{formatMoney(item.unit_price)} c/u</span><b>{formatMoney(receiptLineTotal(item))}</b></div>)}</div></section>
@@ -1607,7 +1687,7 @@ function OrderAccordionRow({ order, columns, expanded, onToggle, pin, onSaved, o
     <section className="order-detail-extra">{[order.notes && `Notas: ${order.notes}`, order.captured_by && `Capturó: ${order.captured_by}`, order.paid_at && `Pagado: ${new Date(order.paid_at).toLocaleString('es-MX')}`, latestEditReason(order) && `Edición: ${latestEditReason(order)}`].filter(Boolean).map((line) => <p key={line}>{line}</p>)}</section>
     <details className="receipt-preview"><summary>Vista previa de ticket</summary><ReceiptTicket order={order} /></details>
     {editing && <div className="ticket-edit-form"><div className="form-grid"><input placeholder="Cliente" value={draft.customerName} onChange={(e) => setDraft({ ...draft, customerName: e.target.value })} /><input placeholder="Teléfono" value={draft.customerPhone} onChange={(e) => setDraft({ ...draft, customerPhone: e.target.value })} /><select value={draft.paymentMethod} onChange={(e) => setDraft({ ...draft, paymentMethod: e.target.value, status: e.target.value === 'plataformas' && draft.status !== 'pagado' ? 'pendiente' : draft.status })}>{ADMIN_PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</select><select value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value })}>{['pendiente','pagado','cancelado'].map((v) => <option key={v}>{v}</option>)}</select><input type="number" step="0.01" placeholder="Descuento" value={draft.discountTotal} onChange={(e) => setDraft({ ...draft, discountTotal: e.target.value })} /></div>{draft.items.map((item) => <div className="ticket-edit-line" key={item.key}><input value={item.productName} onChange={(e) => patchItem(item.key, { productName: e.target.value })} /><input type="number" min="1" value={item.quantity} onChange={(e) => patchItem(item.key, { quantity: Math.max(1, Number(e.target.value) || 1) })} /><input type="number" step="0.01" value={item.unitPrice} onChange={(e) => patchItem(item.key, { unitPrice: Number(e.target.value) || 0 })} /><input placeholder="Opciones/variantes" value={item.selectedOptionsText || ''} onChange={(e) => patchItem(item.key, { selectedOptionsText: e.target.value, selectedOptions: [{ name: e.target.value }] })} /><button className="button--danger" onClick={() => setDraft({ ...draft, items: draft.items.filter((row) => row.key !== item.key) })}>Quitar</button></div>)}<button className="button--ghost" onClick={() => setDraft({ ...draft, items: [...draft.items, { key: createStableUuid(), productName: '', quantity: 1, unitPrice: 0, selectedOptions: [], selectedOptionsText: '', itemNotes: '' }] })}>Agregar producto</button><textarea placeholder="Notas del pedido" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} /><textarea required placeholder="Razón breve del cambio *" value={draft.reason} onChange={(e) => setDraft({ ...draft, reason: e.target.value })} /><p><strong>Subtotal:</strong> {formatMoney(subtotal)} · <strong>Total:</strong> {formatMoney(total)}</p><button onClick={saveEdit} disabled={saving}>{saving ? 'Guardando...' : 'Guardar cambios'}</button></div>}
-    <div className="order-detail-actions"><button className="button--ghost" onClick={() => setEditing(!editing)} disabled={saving}>{editing ? 'Cancelar edición' : 'Editar ticket'}</button><button onClick={printTicket}>Imprimir ticket</button><button className="button--ghost" onClick={printTicket}>Descargar PDF</button>{order.payment_method === 'plataformas' && order.status !== 'pagado' && <button onClick={() => mark('mark-paid')} disabled={saving}>Marcar como pagado</button>}{order.payment_method === 'plataformas' && order.status === 'pagado' && <button className="button--ghost" onClick={() => mark('mark-pending')} disabled={saving}>Revertir a pendiente</button>}{order.status !== 'cancelado' && <button className="button--danger" onClick={() => onCancel(order.id)}>Cancelar pedido</button>}<button className="button--ghost" onClick={onToggle}>Cerrar detalle</button></div>{message && <p className="small-note">{message}</p>}<ReceiptTicket order={order} className="printable-receipt" /></div>;
+    <div className="order-detail-actions"><button className="button--ghost" onClick={() => setEditing(!editing)} disabled={saving}>{editing ? 'Cancelar edición' : 'Editar ticket'}</button><button onClick={() => printReceipt(order)}>Imprimir ticket</button><button className="button--ghost" onClick={() => downloadReceiptPdf(order)}>Descargar PDF</button>{order.payment_method === 'plataformas' && order.status !== 'pagado' && <button onClick={() => mark('mark-paid')} disabled={saving}>Marcar como pagado</button>}{order.payment_method === 'plataformas' && order.status === 'pagado' && <button className="button--ghost" onClick={() => mark('mark-pending')} disabled={saving}>Revertir a pendiente</button>}{order.status !== 'cancelado' && <button className="button--danger" onClick={() => onCancel(order.id)}>Cancelar pedido</button>}<button className="button--ghost" onClick={onToggle}>Cerrar detalle</button></div>{message && <p className="small-note">{message}</p>}</div>;
   return <React.Fragment><tr className={expanded ? 'order-row order-row--expanded' : 'order-row'}>{columns.map((column) => <td key={column.label} data-label={column.label}>{column.render(order)}</td>)}<td data-label="Detalle"><button className="button--ghost" onClick={(event) => { event.stopPropagation(); onToggle(); }}>{expanded ? 'Ocultar detalle ▲' : 'Ver detalle ▼'}</button></td></tr>{expanded && <tr className="order-detail-row"><td colSpan={columns.length + 1}>{expandedContent}</td></tr>}</React.Fragment>;
 }
 
