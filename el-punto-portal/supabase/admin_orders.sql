@@ -34,3 +34,5 @@ create trigger set_admin_orders_updated_at before update on public.admin_orders 
 alter table public.admin_orders enable row level security;
 alter table public.admin_order_items enable row level security;
 -- Sin políticas públicas: las operaciones pasan por Netlify con service role y ADMIN_PIN.
+create index if not exists admin_orders_payment_method_idx on public.admin_orders(payment_method);
+create index if not exists admin_orders_captured_by_idx on public.admin_orders(captured_by);

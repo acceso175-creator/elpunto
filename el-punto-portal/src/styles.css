@@ -1465,3 +1465,13 @@ main { padding-top: 84px; }
 .admin-cart-line div { display:flex; gap:.4rem; align-items:center; }
 .cut-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:1rem; margin-top:1rem; }
 @media(max-width:900px){.admin-order-layout{grid-template-columns:1fr}.admin-order-cart{position:static;max-height:none}.cut-grid{grid-template-columns:1fr}.admin-primary-actions{align-items:flex-start;flex-direction:column}}
+.sales-history { max-width: 1500px; }
+.history-filters { display: grid; gap: .85rem; }
+.history-filters .admin-actions { flex-wrap: wrap; }
+.history-summary { margin: 1rem 0; }
+@media (max-width: 720px) {
+  .sales-history .orders-table, .sales-history .orders-table thead, .sales-history .orders-table tbody, .sales-history .orders-table th, .sales-history .orders-table td, .sales-history .orders-table tr { display: block; }
+  .sales-history .orders-table thead { display: none; }
+  .sales-history .orders-table tr { border: 1px solid var(--line); border-radius: 14px; margin-bottom: .75rem; padding: .6rem; background: var(--card); }
+  .sales-history .orders-table td { border: 0; padding: .35rem 0; }
+}
