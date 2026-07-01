@@ -1545,3 +1545,7 @@ main { padding-top: 84px; }
   .order-detail-actions button { width:100%; }
 }
 @media (max-width: 480px) { .order-detail-actions { grid-template-columns:1fr; } }
+.phone-inline-editor { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin-top:.55rem; }
+.phone-inline-editor input { max-width: 220px; }
+.phone-inline-editor small { flex-basis:100%; color:var(--muted); }
+@media (max-width: 760px) { .phone-inline-editor, .phone-inline-editor input, .phone-inline-editor button { width:100%; max-width:100%; } }

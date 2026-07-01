@@ -45,6 +45,14 @@ export async function handler(event) {
         const next = await fetchOrder(supabase, body.id); await recordHistory(supabase, body.id, orderSnapshot(previous), orderSnapshot(next), body.reason || (nextStatus === 'pagado' ? 'Marcado como pagado' : 'Revertido a pendiente'), body.editedBy || 'admin');
         return json(200, { order: next });
       }
+
+      if (body.action === 'update-phone') {
+        const cleanPhone = String(body.customerPhone || '').trim();
+        if (cleanPhone && !/^[+\d\s().-]{7,24}$/.test(cleanPhone)) return json(400, { error: 'Teléfono inválido. Usa dígitos, espacios y opcionalmente +.' });
+        const { error } = await supabase.from('admin_orders').update({ customer_phone: cleanPhone || null, updated_by: body.editedBy || 'admin' }).eq('id', body.id); if (error) throw error;
+        const next = await fetchOrder(supabase, body.id); await recordHistory(supabase, body.id, orderSnapshot(previous), orderSnapshot(next), body.reason || 'Actualización de teléfono del cliente', body.editedBy || 'admin');
+        return json(200, { order: next });
+      }
       if (body.status === 'cancelado') {
         const { error } = await supabase.from('admin_orders').update({ status: 'cancelado', updated_by: body.editedBy || 'admin' }).eq('id', body.id); if (error) throw error;
         const next = await fetchOrder(supabase, body.id); await recordHistory(supabase, body.id, orderSnapshot(previous), orderSnapshot(next), body.reason || 'Cancelación de pedido', body.editedBy || 'admin');
