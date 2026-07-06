@@ -21,11 +21,6 @@ export function parseBody(event) {
   }
 }
 
-export function validateAdminPin(pin) {
-  const expected = process.env.ADMIN_PIN;
-  // MVP validation: replace this PIN check with Supabase Auth + an admin role in production.
-  return Boolean(expected && pin && pin === expected);
-}
 
 export function getSupabaseAdmin() {
   const url = process.env.SUPABASE_URL;

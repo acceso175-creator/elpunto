@@ -1,4 +1,5 @@
-import { ensureCategory, getSupabaseAdmin, json, menuSnapshot, parseBody, slugify, validateAdminPin } from './_supabaseAdmin.js';
+import { isAuthError, requireAdmin } from './_shared/requireAdmin.js';
+import { ensureCategory, getSupabaseAdmin, json, menuSnapshot, parseBody, slugify } from './_supabaseAdmin.js';
 
 function isOptionsSchemaCacheError(error) {
   return /options.*schema cache|schema cache.*options|Could not find.*options/i.test(error?.message || '');
@@ -104,8 +105,8 @@ async function upsertProduct(supabase, product, category) {
 export async function handler(event) {
   try {
     const body = parseBody(event);
-    const pin = body.adminPin || event.headers['x-admin-pin'];
-    if (!validateAdminPin(pin)) return json(401, { error: 'PIN de admin inválido.' });
+    const admin = await requireAdmin(event);
+    if (isAuthError(admin)) return json(admin.statusCode, admin.body);
     const supabase = getSupabaseAdmin();
 
     if (event.httpMethod === 'GET') return json(200, await menuSnapshot(supabase));

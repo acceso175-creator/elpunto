@@ -1,4 +1,5 @@
-import { getSupabaseAdmin, json, validateAdminPin } from './_supabaseAdmin.js';
+import { isAuthError, requireAdmin } from './_shared/requireAdmin.js';
+import { getSupabaseAdmin, json } from './_supabaseAdmin.js';
 const TZ = 'America/Chihuahua';
 const PAYMENTS = ['efectivo', 'tarjeta', 'transferencia'];
 const money = (value) => Math.round(Number(value || 0) * 100) / 100;
@@ -30,7 +31,7 @@ const addOrder = (stats, order) => {
 };
 export async function handler(event) {
   try {
-    const pin = event.headers['x-admin-pin']; if (!validateAdminPin(pin)) return json(401, { error: 'PIN de admin inválido.' });
+    const admin = await requireAdmin(event); if (isAuthError(admin)) return json(admin.statusCode, admin.body);
     const qs = event.queryStringParameters || {}; if (!qs.startDate || !qs.endDate) return json(400, { error: 'Fechas requeridas.' });
     const supabase = getSupabaseAdmin();
     let query = supabase.from('admin_orders').select('*, admin_order_items(*), order_edit_history(id, reason, edited_by, created_at)').gte('created_at', qs.startDate).lt('created_at', qs.endDate).order('created_at', { ascending: false }).limit(5000);

@@ -1,10 +1,11 @@
-import { getSupabaseAdmin, json, parseBody, validateAdminPin } from './_supabaseAdmin.js';
+import { isAuthError, requireAdmin } from './_shared/requireAdmin.js';
+import { getSupabaseAdmin, json, parseBody } from './_supabaseAdmin.js';
 
 export async function handler(event) {
   try {
     const body = event.httpMethod === 'GET' ? {} : parseBody(event);
-    const pin = body.adminPin || event.headers['x-admin-pin'];
-    if (!validateAdminPin(pin)) return json(401, { error: 'PIN de admin inválido.' });
+    const admin = await requireAdmin(event);
+    if (isAuthError(admin)) return json(admin.statusCode, admin.body);
     if (event.httpMethod !== 'GET') return json(405, { error: 'Método no permitido.' });
 
     const supabase = getSupabaseAdmin();

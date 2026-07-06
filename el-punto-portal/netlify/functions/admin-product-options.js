@@ -1,4 +1,5 @@
-import { getSupabaseAdmin, json, parseBody, supabaseErrorDetails, validateAdminPin } from './_supabaseAdmin.js';
+import { isAuthError, requireAdmin } from './_shared/requireAdmin.js';
+import { getSupabaseAdmin, json, parseBody, supabaseErrorDetails } from './_supabaseAdmin.js';
 
 function fail(error, context, statusCode = 500) {
   const supabaseError = supabaseErrorDetails(error);
@@ -96,8 +97,8 @@ async function saveOptions(supabase, productId, groups) {
 
 export async function handler(event) {
   const body = parseBody(event);
-  const pin = body.adminPin || event.headers['x-admin-pin'];
-  if (!validateAdminPin(pin)) return json(401, { error: 'PIN de admin inválido.' });
+    const admin = await requireAdmin(event);
+    if (isAuthError(admin)) return json(admin.statusCode, admin.body);
   const productId = body.productId || event.queryStringParameters?.productId;
   if (!productId) return json(400, { error: 'Falta productId.' });
   try {

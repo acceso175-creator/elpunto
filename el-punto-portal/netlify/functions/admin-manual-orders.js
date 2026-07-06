@@ -1,4 +1,5 @@
-import { getSupabaseAdmin, json, parseBody, validateAdminPin } from './_supabaseAdmin.js';
+import { isAuthError, requireAdmin } from './_shared/requireAdmin.js';
+import { getSupabaseAdmin, json, parseBody } from './_supabaseAdmin.js';
 const TYPES = ['mostrador', 'domicilio', 'recoger'];
 const PAYMENTS = ['efectivo', 'tarjeta', 'transferencia', 'cortesia', 'plataformas'];
 const STATUSES = ['pendiente', 'pagado', 'cancelado'];
@@ -24,8 +25,8 @@ async function recordHistory(supabase, orderId, previousData, newData, reason, e
 export async function handler(event) {
   try {
     const body = event.httpMethod === 'GET' ? {} : parseBody(event);
-    const pin = body.adminPin || event.headers['x-admin-pin'];
-    if (!validateAdminPin(pin)) return json(401, { error: 'PIN de admin inválido.' });
+    const admin = await requireAdmin(event);
+    if (isAuthError(admin)) return json(admin.statusCode, admin.body);
     const supabase = getSupabaseAdmin();
     if (event.httpMethod === 'GET') {
       const from = event.queryStringParameters?.from; const to = event.queryStringParameters?.to; const paymentStatus = event.queryStringParameters?.paymentStatus;
