@@ -1,5 +1,6 @@
+import { isAuthError, requireAdmin } from './_shared/requireAdmin.js';
 import { BUSINESS_WHATSAPP } from '../../src/businessConfig.js';
-import { getSupabaseAdmin, json, parseBody, validateAdminPin } from './_supabaseAdmin.js';
+import { getSupabaseAdmin, json, parseBody } from './_supabaseAdmin.js';
 
 function toRow(settings) {
   return {
@@ -18,8 +19,8 @@ function toRow(settings) {
 export async function handler(event) {
   try {
     const body = parseBody(event);
-    const pin = body.adminPin || event.headers['x-admin-pin'];
-    if (!validateAdminPin(pin)) return json(401, { error: 'PIN de admin inválido.' });
+    const admin = await requireAdmin(event);
+    if (isAuthError(admin)) return json(admin.statusCode, admin.body);
     const supabase = getSupabaseAdmin();
 
     if (event.httpMethod === 'GET') {

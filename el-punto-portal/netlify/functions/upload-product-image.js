@@ -1,3 +1,4 @@
+import { isAuthError, requireAdmin } from './_shared/requireAdmin.js';
 import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 
@@ -23,12 +24,6 @@ function errorJson(statusCode, message, details = {}) {
 
 function env(name, fallback = '') {
   return process.env[name] || fallback;
-}
-
-function validateAdmin(secret) {
-  const expected = env('ADMIN_UPLOAD_SECRET') || env('ADMIN_PIN');
-  // MVP validation: replace this with Supabase Auth + an admin role before production hardening.
-  return Boolean(expected && secret && secret === expected);
 }
 
 function supabaseConfig() {
@@ -126,7 +121,8 @@ async function uploadImage(event) {
 
   console.info('upload-product-image JSON request:', { productId, fileName, mimeType, bucket, hasBase64: Boolean(base64) });
 
-  if (!validateAdmin(String(payload.adminPin || ''))) return errorJson(401, 'Admin no autorizado para subir imágenes.');
+  const admin = await requireAdmin(event);
+  if (isAuthError(admin)) return errorJson(admin.statusCode, admin.body.error);
   if (!productId) return errorJson(400, 'productId requerido.');
   if (!fileName) return errorJson(400, 'fileName requerido.');
   if (!mimeType) return errorJson(400, 'mimeType requerido.');
@@ -197,9 +193,8 @@ async function deleteImage(event) {
   if (configError) return configError;
 
   const payload = parseJsonBody(event);
-  if (!validateAdmin(String(payload.adminPin || ''))) {
-    return errorJson(401, 'Admin no autorizado para eliminar imágenes.');
-  }
+  const admin = await requireAdmin(event);
+  if (isAuthError(admin)) return errorJson(admin.statusCode, admin.body.error);
   if (!payload.id || !payload.storage_path) return errorJson(400, 'Faltan id o storage_path.');
 
   const supabase = getSupabaseAdmin();

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BUSINESS_PHONE_DISPLAY, BUSINESS_WHATSAPP, BUSINESS_WHATSAPP_URL } from './businessConfig.js';
 import { businessDefaults, initialMenu } from './menuData.js';
-import { isSupabaseConfigured, listProductImages } from './lib/supabaseClient.js';
+import { isSupabaseConfigured, listProductImages, supabase } from './lib/supabaseClient.js';
 import { getMenuData, normalizeMenuData } from './services/menuService.js';
 import './styles.css';
 
@@ -16,7 +16,6 @@ const STORAGE = {
   lastStripeOrder: 'elpunto_last_stripe_order_v1'
 };
 
-const ADMIN_PIN = '1234';
 const BUSINESS_ADDRESS = 'Calle Ojinaga 410, Col. Centro, Chihuahua, Chih., México';
 const BUSINESS_ADDRESS_FOOTER = 'Calle Ojinaga 410, Col. Centro, Chihuahua, Chih.';
 const MAP_QUERY = encodeURIComponent(BUSINESS_ADDRESS);
@@ -86,20 +85,28 @@ function mapBusinessSettings(row) {
   };
 }
 
-async function adminRequest(functionName, { method = 'POST', pin, body = {} } = {}) {
+
+async function adminAuthHeaders() {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error('La sesión administrativa expiró');
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` };
+}
+
+async function adminRequest(functionName, { method = 'POST', body = {} } = {}) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error('La sesión administrativa expiró');
   const query = method === 'GET' ? new URLSearchParams({ t: String(Date.now()), ...Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined && value !== null).map(([key, value]) => [key, String(value)])) }) : null;
   const endpoint = `/.netlify/functions/${functionName}${query ? `?${query}` : ''}`;
   const response = await fetch(endpoint, {
     method,
     cache: 'no-store',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(pin ? { 'x-admin-pin': pin } : {})
-    },
-    body: method === 'GET' ? undefined : JSON.stringify({ adminPin: pin, ...body })
+    headers: await adminAuthHeaders(),
+    body: method === 'GET' ? undefined : JSON.stringify(body)
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401) { await supabase.auth.signOut(); throw new Error('Tu sesión expiró. Inicia sesión nuevamente.'); }
+    if (response.status === 403) throw new Error('Tu cuenta no tiene permisos de administrador.');
     const details = result.supabaseError;
     const message = details ? [details.message, details.code && `Código: ${details.code}`, details.details && `Detalles: ${details.details}`, details.hint && `Sugerencia: ${details.hint}`].filter(Boolean).join(' · ') : result.error || 'Error en función de Netlify.';
     console.error(`[${functionName}]`, result);
@@ -382,7 +389,7 @@ function cryptoWalletsFromBusiness(business) {
 }
 
 function clearAdminSession() {
-  const keys = ['adminAuthenticated', 'adminPin', 'isAdmin', 'adminSession'];
+  const keys = ['adminAuthenticated', 'isAdmin', 'adminSession'];
   keys.forEach((key) => {
     localStorage.removeItem(key);
     sessionStorage.removeItem(key);
@@ -604,7 +611,7 @@ function App() {
       <Header navigateTo={navigateTo} />
       <Hero navigateTo={navigateTo} />
       <LocationSection business={business} />
-      
+
       {activeSection === 'inicio' && <HomeImages />}
 
       {activeSection === 'menu' && (
@@ -1502,7 +1509,7 @@ function AccountSection({ profile, setProfile }) {
   );
 }
 
-function ManualOrderCapture({ menu, pin, onBack, onSaved }) {
+function ManualOrderCapture({ menu, onBack, onSaved }) {
   const [search, setSearch] = useState(''); const [cart, setCart] = useState([]); const [selected, setSelected] = useState({});
   const [form, setForm] = useState({ customerName: '', customerPhone: '', orderType: 'mostrador', paymentMethod: 'efectivo', status: 'pagado', notes: '', capturedBy: '' });
   const [status, setStatus] = useState(''); const [lastOrder, setLastOrder] = useState(null);
@@ -1522,7 +1529,7 @@ function ManualOrderCapture({ menu, pin, onBack, onSaved }) {
   async function save() {
     if (!cart.length) return setStatus('No se puede guardar un pedido vacío.');
     if (!form.capturedBy.trim()) return setStatus('Escribe quién captura el pedido.');
-    try { setStatus('Guardando pedido...'); const result = await adminRequest('admin-manual-orders', { pin, body: { ...form, items: cart } }); setLastOrder(result.order); setCart([]); setStatus(`Pedido ${result.order.order_number} guardado correctamente.`); onSaved(); } catch (error) { setStatus(error.message); }
+    try { setStatus('Guardando pedido...'); const result = await adminRequest('admin-manual-orders', { body: { ...form, items: cart } }); setLastOrder(result.order); setCart([]); setStatus(`Pedido ${result.order.order_number} guardado correctamente.`); onSaved(); } catch (error) { setStatus(error.message); }
   }
   return <section className="section admin-order-screen"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Capturar pedido</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button className="button--ghost" onClick={() => { setCart([]); setLastOrder(null); }}>Nuevo pedido</button>{lastOrder && <button className="button--ghost" onClick={() => alert(`${lastOrder.order_number} · ${formatMoney(lastOrder.total)}`)}>Ver último pedido</button>}</div></div>
     <div className="admin-order-layout"><div className="admin-menu-picker"><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar producto por nombre…" />{categories.map((category) => <div key={category.id}><h3>{category.name}</h3><div className="admin-product-pick-grid">{category.items.map((product) => <article className="admin-product-pick" key={product.id}><strong>{product.name}</strong><span>{hasValidDiscount(product) && <del>{formatMoney(product.price)} </del>}{formatMoney(getEffectivePrice(product))}</span><p>{product.description}</p>{activeOptionGroups(product).map((group) => <fieldset key={group.id || group.name}><legend>{group.name}{group.required ? ' *' : ''}</legend>{group.options.map((option) => <button type="button" className={(selected[`${product.id}:${group.id || group.name}`] || []).some((item) => item.id === option.id) ? 'option-chip option-chip--selected' : 'option-chip'} onClick={() => toggleOption(product, group, option)} key={option.id}>{option.name}{option.priceDelta ? ` +${formatMoney(option.priceDelta)}` : ''}</button>)}</fieldset>)}<button type="button" onClick={() => add(product)}>Agregar</button></article>)}</div></div>)}</div>
@@ -1530,7 +1537,7 @@ function ManualOrderCapture({ menu, pin, onBack, onSaved }) {
       <div className="form-grid one"><input placeholder="Nombre del cliente (opcional)" value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /><input type="tel" inputMode="tel" autoComplete="tel" placeholder="Teléfono (opcional)" value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} /><select value={form.orderType} onChange={(e) => setForm({ ...form, orderType: e.target.value })}>{['mostrador','domicilio','recoger'].map((v) => <option key={v}>{v}</option>)}</select><select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, status: e.target.value === 'plataformas' ? 'pendiente' : form.status })}>{ADMIN_PAYMENT_METHODS.map((v) => <option value={v.value} key={v.value}>{v.label}</option>)}</select><select value={form.status} disabled={form.paymentMethod === 'plataformas'} onChange={(e) => setForm({ ...form, status: e.target.value })}>{['pendiente','pagado','cancelado'].map((v) => <option key={v}>{v}</option>)}</select><input required placeholder="Capturado por *" value={form.capturedBy} onChange={(e) => setForm({ ...form, capturedBy: e.target.value })} /><textarea placeholder="Notas generales" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /><button onClick={save}>Guardar pedido</button><p className="small-note">{status}</p></div></aside></div></section>;
 }
 
-function AdminCuts({ pin, onBack }) {
+function AdminCuts({ onBack }) {
   const today = dateInputFromParts(...chihuahuaDateParts());
   const [date, setDate] = useState(today); const [data, setData] = useState(null); const [status, setStatus] = useState(''); const [expandedOrderId, setExpandedOrderId] = useState(null);
   const formattedDate = new Date(`${date}T12:00:00-06:00`).toLocaleDateString('es-MX', { timeZone: 'America/Chihuahua' });
@@ -1539,12 +1546,12 @@ function AdminCuts({ pin, onBack }) {
     try {
       setStatus('Actualizando corte...');
       const end = new Date(`${selectedDate}T12:00:00-06:00`); end.setDate(end.getDate() + 1);
-      const result = await adminRequest('admin-sales-history', { method: 'GET', pin, body: { startDate: `${selectedDate}T00:00:00-06:00`, endDate: end.toISOString(), groupBy: 'day' } });
+      const result = await adminRequest('admin-sales-history', { method: 'GET', body: { startDate: `${selectedDate}T00:00:00-06:00`, endDate: end.toISOString(), groupBy: 'day' } });
       setData(result); setStatus(result.orders.length ? 'Corte actualizado.' : 'No hay ventas en este periodo');
     } catch (error) { setStatus(error.message); }
   }
   useEffect(() => { load(today); }, []);
-  async function cancelOrder(id) { if (!confirm('¿Cancelar este pedido sin eliminarlo?')) return; try { await adminRequest('admin-manual-orders', { method: 'PATCH', pin, body: { id, status: 'cancelado' } }); load(); } catch (error) { setStatus(error.message); } }
+  async function cancelOrder(id) { if (!confirm('¿Cancelar este pedido sin eliminarlo?')) return; try { await adminRequest('admin-manual-orders', { method: 'PATCH', body: { id, status: 'cancelado' } }); load(); } catch (error) { setStatus(error.message); } }
   function exportCutCsv() {
     if (!data) return;
     const lines = [['Corte del día', date], [], ['Resumen'], ...Object.entries(data.summary).map(([key, value]) => [key, value]), [], ['Pedidos capturados'], ['Hora','Folio','Cliente','Total','Pago','Tipo','Estado','Capturado por'], ...data.orders.map((o) => [new Date(o.created_at).toLocaleTimeString('es-MX'), o.order_number, o.customer_name || '', o.total, o.payment_method, o.order_type, o.status, o.captured_by]), [], ['Productos vendidos'], ['Producto','Cantidad','Total vendido','Ticket promedio','Cortesías'], ...data.products.map((p) => [p.product, p.quantity, salesTotalValue(p), p.averageTicket, p.courtesies]), [], ['Ventas por capturista'], ['Capturista','Total vendido','Pedidos','Ticket','Efectivo','Tarjeta','Transferencia','Cortesías','Cancelados'], ...data.capturers.map((c) => [c.capturedBy, salesTotalValue(c), c.paidOrders, c.averageTicket, c.efectivo, c.tarjeta, c.transferencia, c.cortesia, c.canceledOrders])];
@@ -1557,7 +1564,7 @@ function AdminCuts({ pin, onBack }) {
       <div className="panel"><h3>Por método de pago</h3><div className="cut-grid">{ADMIN_PAYMENT_METHODS.map((method) => <p key={method.value}>{method.label}: <strong>{formatMoney(method.value === 'cortesia' ? summary.cortesia : summary[method.value])}</strong></p>)}</div></div>
       <HistoryTable title="Productos vendidos / más vendidos" headers={['Producto','Cantidad vendida','Total vendido','Ticket promedio','Cortesías']} rows={data.products.map((p) => [p.product,p.quantity,formatMoney(salesTotalValue(p)),formatMoney(p.averageTicket),p.courtesies])} />
       <HistoryTable title="Ventas por capturista" headers={['Capturista','Total vendido','Pedidos','Ticket promedio','Efectivo','Tarjeta','Transferencia','Cortesías','Cancelados']} rows={data.capturers.map((c) => [c.capturedBy,formatMoney(salesTotalValue(c)),c.paidOrders,formatMoney(c.averageTicket),formatMoney(c.efectivo),formatMoney(c.tarjeta),formatMoney(c.transferencia),formatMoney(c.cortesia),c.canceledOrders])} />
-      <AdminOrdersTable title="Pedidos capturados del día" orders={data.orders} columns={[{ label: 'Hora', render: (o) => new Date(o.created_at).toLocaleTimeString('es-MX') }, { label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }, { label: 'Método de pago', render: (o) => paymentLabel(o.payment_method) }, { label: 'Tipo', render: (o) => o.order_type }, { label: 'Estado', render: (o) => <StatusBadge status={o.status} /> }, { label: 'Capturado por', render: (o) => o.captured_by || 'admin' }]} expandedId={expandedOrderId} setExpandedId={setExpandedOrderId} pin={pin} onSaved={() => load()} onCancel={cancelOrder} />
+      <AdminOrdersTable title="Pedidos capturados del día" orders={data.orders} columns={[{ label: 'Hora', render: (o) => new Date(o.created_at).toLocaleTimeString('es-MX') }, { label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }, { label: 'Método de pago', render: (o) => paymentLabel(o.payment_method) }, { label: 'Tipo', render: (o) => o.order_type }, { label: 'Estado', render: (o) => <StatusBadge status={o.status} /> }, { label: 'Capturado por', render: (o) => o.captured_by || 'admin' }]} expandedId={expandedOrderId} setExpandedId={setExpandedOrderId} onSaved={() => load()} onCancel={cancelOrder} />
     </>}</>}</section>;
 }
 
@@ -1756,7 +1763,7 @@ function downloadReceiptPdf(order) {
 }
 
 
-function OrderAccordionRow({ order, columns, expanded, onToggle, pin, onSaved, onCancel }) {
+function OrderAccordionRow({ order, columns, expanded, onToggle, onSaved, onCancel }) {
   const [editing, setEditing] = useState(false); const [saving, setSaving] = useState(false); const [message, setMessage] = useState('');
   const [phoneEditing, setPhoneEditing] = useState(false); const [phoneDraft, setPhoneDraft] = useState(order.customer_phone || ''); const [phoneStatus, setPhoneStatus] = useState('');
   const toDraft = (o) => ({ customerName: o.customer_name || '', customerPhone: o.customer_phone || '', orderType: o.order_type || 'mostrador', paymentMethod: o.payment_method || 'efectivo', status: o.status || 'pagado', discountTotal: o.discount_total || 0, notes: o.notes || '', reason: '', items: (o.admin_order_items || []).map((item) => ({ key: item.id || createStableUuid(), productId: item.product_id, productName: item.product_name, quantity: item.quantity, unitPrice: item.unit_price, selectedOptionsText: selectedOptionsText(item.selected_options), selectedOptions: item.selected_options, itemNotes: item.item_notes || '' })) });
@@ -1764,9 +1771,9 @@ function OrderAccordionRow({ order, columns, expanded, onToggle, pin, onSaved, o
   useEffect(() => { setDraft(toDraft(order)); setEditing(false); setMessage(''); setPhoneDraft(order.customer_phone || ''); setPhoneEditing(false); setPhoneStatus(''); }, [order?.id]);
   const subtotal = draft.items.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unitPrice || 0), 0); const total = Math.max(0, subtotal - Number(draft.discountTotal || 0));
   const patchItem = (key, patch) => setDraft((current) => ({ ...current, items: current.items.map((item) => item.key === key ? { ...item, ...patch } : item) }));
-  async function mark(action) { const verb = action === 'mark-paid' ? 'marcar como pagado' : 'revertir a pendiente'; if (!confirm(`¿Confirmas ${verb} este pedido?`)) return; setSaving(true); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', pin, body: { id: order.id, action, reason: verb, editedBy: 'admin' } }); setMessage('Estado actualizado.'); onSaved?.(result.order); } catch (error) { setMessage(error.message); } finally { setSaving(false); } }
-  async function saveEdit() { if (!draft.reason.trim()) return setMessage('Escribe una razón del cambio.'); if (!draft.items.length) return setMessage('El ticket no puede quedar vacío.'); if (!confirm('¿Guardar cambios en este ticket sin duplicar el pedido?')) return; setSaving(true); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', pin, body: { id: order.id, action: 'edit', ...draft, editedBy: 'admin' } }); setMessage('Ticket actualizado correctamente.'); onSaved?.(result.order); setEditing(false); } catch (error) { setMessage(error.message); } finally { setSaving(false); } }
-  async function savePhone() { const cleanPhone = String(phoneDraft || '').trim(); if (cleanPhone && !/^[+\d\s().-]{7,24}$/.test(cleanPhone)) return setPhoneStatus('Teléfono inválido. Usa dígitos, espacios y opcionalmente +.'); setSaving(true); setPhoneStatus('Guardando teléfono...'); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', pin, body: { id: order.id, action: 'update-phone', customerPhone: cleanPhone, reason: cleanPhone ? 'Actualización de teléfono del cliente' : 'Teléfono del cliente eliminado', editedBy: 'admin' } }); setPhoneStatus('Teléfono guardado.'); setPhoneEditing(false); onSaved?.(result.order); } catch (error) { setPhoneStatus(error.message); } finally { setSaving(false); } }
+  async function mark(action) { const verb = action === 'mark-paid' ? 'marcar como pagado' : 'revertir a pendiente'; if (!confirm(`¿Confirmas ${verb} este pedido?`)) return; setSaving(true); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', body: { id: order.id, action, reason: verb, editedBy: 'admin' } }); setMessage('Estado actualizado.'); onSaved?.(result.order); } catch (error) { setMessage(error.message); } finally { setSaving(false); } }
+  async function saveEdit() { if (!draft.reason.trim()) return setMessage('Escribe una razón del cambio.'); if (!draft.items.length) return setMessage('El ticket no puede quedar vacío.'); if (!confirm('¿Guardar cambios en este ticket sin duplicar el pedido?')) return; setSaving(true); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', body: { id: order.id, action: 'edit', ...draft, editedBy: 'admin' } }); setMessage('Ticket actualizado correctamente.'); onSaved?.(result.order); setEditing(false); } catch (error) { setMessage(error.message); } finally { setSaving(false); } }
+  async function savePhone() { const cleanPhone = String(phoneDraft || '').trim(); if (cleanPhone && !/^[+\d\s().-]{7,24}$/.test(cleanPhone)) return setPhoneStatus('Teléfono inválido. Usa dígitos, espacios y opcionalmente +.'); setSaving(true); setPhoneStatus('Guardando teléfono...'); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', body: { id: order.id, action: 'update-phone', customerPhone: cleanPhone, reason: cleanPhone ? 'Actualización de teléfono del cliente' : 'Teléfono del cliente eliminado', editedBy: 'admin' } }); setPhoneStatus('Teléfono guardado.'); setPhoneEditing(false); onSaved?.(result.order); } catch (error) { setPhoneStatus(error.message); } finally { setSaving(false); } }
   const productRows = order.admin_order_items || [];
   const expandedContent = <div className="order-accordion"><div className="order-detail-grid"><section><h4>Encabezado</h4>{[order.order_number, order.created_at && new Date(order.created_at).toLocaleString('es-MX'), orderEdited(order) && 'Editado', order.status && `Estado: ${order.status}`, order.payment_method && `Pago: ${paymentLabel(order.payment_method)}`, platformText(order) && `Plataforma: ${platformText(order)}`].filter(Boolean).map((line) => <p key={line}>{line}</p>)}</section><section><h4>Cliente</h4>{[order.customer_name && `Nombre: ${order.customer_name}`, `Teléfono: ${order.customer_phone || 'No registrado'}`, order.order_type && `Entrega: ${order.order_type}`, order.delivery_address && `Dirección: ${order.delivery_address}`].filter(Boolean).map((line) => <p key={line}>{line}</p>)}<div className="phone-inline-editor">{phoneEditing ? <><input type="tel" inputMode="tel" autoComplete="tel" placeholder="614 123 4567" value={phoneDraft} onChange={(event) => setPhoneDraft(event.target.value)} disabled={saving} /><button type="button" onClick={savePhone} disabled={saving}>{saving ? 'Guardando...' : 'Guardar'}</button><button type="button" className="button--ghost" onClick={() => { setPhoneDraft(order.customer_phone || ''); setPhoneEditing(false); setPhoneStatus(''); }} disabled={saving}>Cancelar</button></> : <button type="button" className="button--ghost" onClick={() => setPhoneEditing(true)}>{order.customer_phone ? 'Editar teléfono' : 'Agregar teléfono'}</button>}{phoneStatus && <small>{phoneStatus}</small>}</div></section></div>
     <section><h4>Productos</h4><div className="order-detail-items">{productRows.map((item) => <div className="order-detail-item" key={item.id}><div><strong>{item.quantity}× {item.product_name}</strong>{selectedOptionsText(item.selected_options) !== 'Sin opciones' && <small>{selectedOptionsText(item.selected_options)}</small>}{item.item_notes && <small>Nota: {item.item_notes}</small>}</div><span>{formatMoney(item.unit_price)} c/u</span><b>{formatMoney(receiptLineTotal(item))}</b></div>)}</div></section>
@@ -1778,12 +1785,12 @@ function OrderAccordionRow({ order, columns, expanded, onToggle, pin, onSaved, o
   return <React.Fragment><tr className={expanded ? 'order-row order-row--expanded' : 'order-row'}>{columns.map((column) => <td key={column.label} data-label={column.label}>{column.render(order)}</td>)}<td data-label="Detalle"><button className="button--ghost" onClick={(event) => { event.stopPropagation(); onToggle(); }}>{expanded ? 'Ocultar detalle ▲' : 'Ver detalle ▼'}</button></td></tr>{expanded && <tr className="order-detail-row"><td colSpan={columns.length + 1}>{expandedContent}</td></tr>}</React.Fragment>;
 }
 
-function AdminOrdersTable({ title, orders, columns, expandedId, setExpandedId, pin, onSaved, onCancel }) {
-  return <div className="panel"><h3>{title}</h3><div className="orders-table-wrap"><table className="orders-table admin-orders-table"><thead><tr>{[...columns.map((c) => c.label), 'Detalle'].map((h) => <th key={h}>{h}</th>)}</tr></thead><tbody>{orders.map((order) => <OrderAccordionRow key={order.id} order={order} columns={columns} expanded={expandedId === order.id} onToggle={() => setExpandedId(expandedId === order.id ? null : order.id)} pin={pin} onSaved={onSaved} onCancel={onCancel} />)}</tbody></table></div></div>;
+function AdminOrdersTable({ title, orders, columns, expandedId, setExpandedId, onSaved, onCancel }) {
+  return <div className="panel"><h3>{title}</h3><div className="orders-table-wrap"><table className="orders-table admin-orders-table"><thead><tr>{[...columns.map((c) => c.label), 'Detalle'].map((h) => <th key={h}>{h}</th>)}</tr></thead><tbody>{orders.map((order) => <OrderAccordionRow key={order.id} order={order} columns={columns} expanded={expandedId === order.id} onToggle={() => setExpandedId(expandedId === order.id ? null : order.id)} onSaved={onSaved} onCancel={onCancel} />)}</tbody></table></div></div>;
 }
 
-function TicketDetailEditor({ order, pin, onClose, onSaved }) {
-  return <div className="panel"><AdminOrdersTable title="Detalle" orders={[order]} columns={[{ label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }]} expandedId={order.id} setExpandedId={(id) => !id && onClose?.()} pin={pin} onSaved={onSaved} onCancel={() => {}} /></div>;
+function TicketDetailEditor({ order, onClose, onSaved }) {
+  return <div className="panel"><AdminOrdersTable title="Detalle" orders={[order]} columns={[{ label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }]} expandedId={order.id} setExpandedId={(id) => !id && onClose?.()} onSaved={onSaved} onCancel={() => {}} /></div>;
 }
 
 function chihuahuaDateParts(date = new Date()) {
@@ -1811,14 +1818,14 @@ function csvEscape(value) {
 
 const salesTotalValue = (row = {}) => row.salesTotal ?? (Number(row.totalSold || 0) + Number(row.platformPendingTotal || 0));
 
-function SalesHistory({ pin, onBack }) {
+function SalesHistory({ onBack }) {
   const [preset, setPreset] = useState('today'); const [range, setRange] = useState(() => historyPresetRange('today')); const [groupBy, setGroupBy] = useState('day');
   const [data, setData] = useState(null); const [status, setStatus] = useState(''); const [expandedOrderId, setExpandedOrderId] = useState(null);
   async function load(nextRange = range, nextGroupBy = groupBy) {
     try {
       setStatus('Cargando histórico...');
       const end = new Date(`${nextRange.endDate}T12:00:00-06:00`); end.setDate(end.getDate() + 1);
-      const result = await adminRequest('admin-sales-history', { method: 'GET', pin, body: { startDate: `${nextRange.startDate}T00:00:00-06:00`, endDate: end.toISOString(), groupBy: nextGroupBy } });
+      const result = await adminRequest('admin-sales-history', { method: 'GET', body: { startDate: `${nextRange.startDate}T00:00:00-06:00`, endDate: end.toISOString(), groupBy: nextGroupBy } });
       setData(result); setStatus(result.orders.length ? 'Histórico actualizado.' : 'No hay ventas en este periodo');
     } catch (error) { setStatus(error.message); }
   }
@@ -1828,13 +1835,13 @@ function SalesHistory({ pin, onBack }) {
     if (!data) return; const lines = [['Resumen'], ...Object.entries(data.summary).map(([k, v]) => [k, v]), [], ['Ventas agrupadas'], ['Periodo','Total vendido','Efectivo','Tarjeta','Transferencia','Cortesías','Pedidos pagados','Pedidos cancelados','Ticket promedio'], ...data.grouped.map((r) => [r.period,salesTotalValue(r),r.efectivo,r.tarjeta,r.transferencia,r.cortesia,r.paidOrders,r.canceledOrders,r.averageTicket]), [], ['Pedidos'], ['Fecha','Folio','Cliente','Total','Pago','Tipo','Estado','Capturado por'], ...data.orders.map((o) => [o.created_at,o.order_number,o.customer_name,o.total,o.payment_method,o.order_type,o.status,o.captured_by]), [], ['Productos'], ['Producto','Cantidad','Total vendido','Ticket promedio','Cortesías'], ...data.products.map((p) => [p.product,p.quantity,salesTotalValue(p),p.averageTicket,p.courtesies]), [], ['Capturistas'], ['Capturista','Total','Pedidos','Ticket','Efectivo','Tarjeta','Transferencia','Cortesías','Cancelados'], ...data.capturers.map((c) => [c.capturedBy,salesTotalValue(c),c.paidOrders,c.averageTicket,c.efectivo,c.tarjeta,c.transferencia,c.cortesia,c.canceledOrders])];
     const blob = new Blob([lines.map((row) => row.map(csvEscape).join(',')).join('\n')], { type: 'text/csv;charset=utf-8' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `historico-ventas-${range.startDate}-${range.endDate}.csv`; a.click(); URL.revokeObjectURL(url);
   }
-  async function cancelOrder(id) { if (!confirm('¿Cancelar este pedido sin eliminarlo?')) return; try { await adminRequest('admin-manual-orders', { method: 'PATCH', pin, body: { id, status: 'cancelado' } }); load(); } catch (error) { setStatus(error.message); } }
+  async function cancelOrder(id) { if (!confirm('¿Cancelar este pedido sin eliminarlo?')) return; try { await adminRequest('admin-manual-orders', { method: 'PATCH', body: { id, status: 'cancelado' } }); load(); } catch (error) { setStatus(error.message); } }
   const summary = data?.summary || {};
   return <section className="section sales-history"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Histórico de ventas</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button onClick={exportCsv}>Exportar CSV</button></div></div>
     <div className="panel history-filters"><div className="admin-actions">{[['today','Hoy'],['yesterday','Ayer'],['thisWeek','Esta semana'],['lastWeek','Semana pasada'],['thisMonth','Este mes'],['lastMonth','Mes pasado'],['thisYear','Este año'],['lastYear','Año pasado']].map(([v,l]) => <button key={v} className={preset === v ? '' : 'button--ghost'} onClick={() => applyPreset(v)}>{l}</button>)}</div><div className="admin-actions"><label>Desde <input type="date" value={range.startDate} onChange={(e) => { setPreset('custom'); setRange({ ...range, startDate: e.target.value }); }} /></label><label>Hasta <input type="date" value={range.endDate} onChange={(e) => { setPreset('custom'); setRange({ ...range, endDate: e.target.value }); }} /></label><select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); load(range, e.target.value); }}><option value="day">Por día</option><option value="week">Por semana</option><option value="month">Por mes</option><option value="year">Por año</option></select><button onClick={() => load()}>Consultar</button></div><p className="small-note">{status}. Zona horaria: Chihuahua/México.</p></div>
     {data && <><PendingPlatformsCard summary={summary} onShowDetail={() => setExpandedOrderId((data.orders || []).find((o) => o.payment_method === 'plataformas' && o.status === 'pendiente')?.id || null)} /><div className="metric-grid history-summary">{[['Total vendido','salesTotal'],['Pagos cobrados','paymentsCollected'],['Pagos pendientes de plataformas','platformPendingTotal'],['Total efectivo','efectivo'],['Total tarjeta','tarjeta'],['Total transferencia','transferencia'],['Plataformas pagadas','platformPaid'],['Plataformas pendientes','platformPending'],['Cortesías','cortesia'],['Pedidos pagados','paidOrders'],['Pedidos pendientes','pendingOrders'],['Pedidos cancelados','canceledOrders'],['Ticket promedio','averageTicket'],['Número total de pedidos','totalOrders'],['Total por domicilio','domicilio'],['Total mostrador','mostrador'],['Total recoger','recoger']].map(([label,key]) => <Metric key={key} label={label} value={String(key).includes('Orders') || key === 'totalOrders' ? summary[key] : formatMoney(summary[key])} />)}</div>{data.orders.length === 0 ? <div className="panel">No hay ventas en este periodo</div> : <>
       <HistoryTable title="Ventas agrupadas" headers={['Periodo','Total vendido','Efectivo','Tarjeta','Transferencia','Cortesías','Pagados','Cancelados','Ticket']} rows={data.grouped.map((r) => [r.period,formatMoney(salesTotalValue(r)),formatMoney(r.efectivo),formatMoney(r.tarjeta),formatMoney(r.transferencia),formatMoney(r.cortesia),r.paidOrders,r.canceledOrders,formatMoney(r.averageTicket)])} />
-      <AdminOrdersTable title="Histórico de pedidos" orders={data.orders} columns={[{ label: 'Fecha y hora', render: (o) => new Date(o.created_at).toLocaleString('es-MX') }, { label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }, { label: 'Pago', render: (o) => paymentLabel(o.payment_method) }, { label: 'Tipo', render: (o) => o.order_type }, { label: 'Estado', render: (o) => <StatusBadge status={o.status} /> }, { label: 'Capturado por', render: (o) => o.captured_by || 'admin' }]} expandedId={expandedOrderId} setExpandedId={setExpandedOrderId} pin={pin} onSaved={() => load()} onCancel={cancelOrder} />
+      <AdminOrdersTable title="Histórico de pedidos" orders={data.orders} columns={[{ label: 'Fecha y hora', render: (o) => new Date(o.created_at).toLocaleString('es-MX') }, { label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }, { label: 'Pago', render: (o) => paymentLabel(o.payment_method) }, { label: 'Tipo', render: (o) => o.order_type }, { label: 'Estado', render: (o) => <StatusBadge status={o.status} /> }, { label: 'Capturado por', render: (o) => o.captured_by || 'admin' }]} expandedId={expandedOrderId} setExpandedId={setExpandedOrderId} onSaved={() => load()} onCancel={cancelOrder} />
       <HistoryTable title="Productos vendidos" headers={['Producto','Cantidad vendida','Total vendido','Ticket promedio','Cortesías']} rows={data.products.map((p) => [p.product,p.quantity,formatMoney(salesTotalValue(p)),formatMoney(p.averageTicket),p.courtesies])} />
       <HistoryTable title="Ventas por capturista" headers={['Capturista','Total vendido','Pedidos','Ticket promedio','Efectivo','Tarjeta','Transferencia','Cortesías','Cancelados']} rows={data.capturers.map((c) => [c.capturedBy,formatMoney(salesTotalValue(c)),c.paidOrders,formatMoney(c.averageTicket),formatMoney(c.efectivo),formatMoney(c.tarjeta),formatMoney(c.transferencia),formatMoney(c.cortesia),c.canceledOrders])} /></>}</>}</section>;
 }
@@ -1844,8 +1851,10 @@ function HistoryTable({ title, headers, rows }) {
 }
 
 function AdminSection({ menu, setMenu, business, setBusiness, productImages, refreshProductImages, productImagesError, dataSource, setDataSource }) {
-  const [pin, setPin] = useState('');
-  const [unlocked, setUnlocked] = useState(false);
+  const [adminSession, setAdminSession] = useState(null);
+  const [authStatus, setAuthStatus] = useState('Verificando sesión...');
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
   const [metrics, setMetrics] = useState(() => readStorage(STORAGE.metrics, defaultMetrics()));
   const [newProduct, setNewProduct] = useState({ categoryId: menu[0]?.id || 'desayunos', categoryName: '', name: '', price: '', description: '', ingredients: '' });
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -1863,29 +1872,68 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   const [productSearch, setProductSearch] = useState('');
 
   useEffect(() => {
+    let mounted = true;
+    async function initSession() {
+      if (!isSupabaseConfigured) { setAuthStatus('Configura Supabase para usar el panel administrativo.'); setAuthLoading(false); return; }
+      setAuthLoading(true);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (mounted) await verifyAdminSession(session);
+      if (mounted) setAuthLoading(false);
+    }
+    initSession();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
+      if (!session) { setAdminSession(null); setAuthLoading(false); }
+    });
+    return () => { mounted = false; subscription?.unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
     const refresh = () => setMetrics(readStorage(STORAGE.metrics, defaultMetrics()));
     window.addEventListener('elpunto:metrics', refresh);
     return () => window.removeEventListener('elpunto:metrics', refresh);
   }, []);
 
-  function login() {
-    if (isSupabaseConfigured) {
-      if (!pin.trim()) return alert('Escribe el ADMIN_PIN configurado en Netlify.');
-      setUnlocked(true);
-      return;
+  async function verifyAdminSession(session, { showStatus = false } = {}) {
+    if (!session?.user?.id) { setAdminSession(null); setAuthStatus(''); return false; }
+    if (showStatus) setAuthStatus('Verificando permisos...');
+    const { data, error } = await supabase.from('admin_users').select('user_id, active').eq('user_id', session.user.id).eq('active', true).maybeSingle();
+    if (error || data?.user_id !== session.user.id || data?.active !== true) {
+      await supabase.auth.signOut();
+      setAdminSession(null);
+      setAuthStatus('Tu usuario no tiene acceso al panel administrativo.');
+      return false;
     }
-    setUnlocked(pin === ADMIN_PIN);
-    if (pin !== ADMIN_PIN) alert('PIN incorrecto. En modo local el PIN demo es 1234.');
+    setAdminSession(session);
+    setAuthStatus('');
+    return true;
   }
 
+  async function login(event) {
+    event?.preventDefault?.();
+    setAuthStatus('Iniciando sesión...');
+    const { data, error } = await supabase.auth.signInWithPassword({ email: loginForm.email.trim(), password: loginForm.password });
+    if (error || !data?.session) { setAuthStatus('Correo o contraseña incorrectos.'); return; }
+    await verifyAdminSession(data.session, { showStatus: true });
+    setLoginForm((current) => ({ ...current, password: '' }));
+  }
+
+  async function logout() {
+    await supabase.auth.signOut();
+    setAdminSession(null);
+    setAdminView('inicio');
+    setAuthStatus('');
+  }
+
+
   async function loadPlatformSummary() {
-    try { const today = dateInputFromParts(...chihuahuaDateParts()); const end = new Date(`${today}T12:00:00-06:00`); end.setDate(end.getDate() + 1); const result = await adminRequest('admin-sales-history', { method: 'GET', pin, body: { startDate: `${today}T00:00:00-06:00`, endDate: end.toISOString(), groupBy: 'day' } }); setPlatformSummary(result.summary || null); } catch { setPlatformSummary(null); }
+    try { const today = dateInputFromParts(...chihuahuaDateParts()); const end = new Date(`${today}T12:00:00-06:00`); end.setDate(end.getDate() + 1); const result = await adminRequest('admin-sales-history', { method: 'GET', body: { startDate: `${today}T00:00:00-06:00`, endDate: end.toISOString(), groupBy: 'day' } }); setPlatformSummary(result.summary || null); } catch { setPlatformSummary(null); }
   }
 
   async function loadOrders() {
     if (!isSupabaseConfigured) return;
     try {
-      const result = await adminRequest('admin-orders', { method: 'GET', pin });
+      const result = await adminRequest('admin-orders', { method: 'GET' });
       setOrders(result.orders || []);
       setOrdersStatus('Órdenes sincronizadas.');
     } catch (error) {
@@ -1900,7 +1948,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       setAdminStatus('Cargando productos reales desde Supabase...');
       localStorage.removeItem(STORAGE.menu);
       setMenu([]);
-      const snapshot = await adminRequest('admin-products', { method: 'GET', pin });
+      const snapshot = await adminRequest('admin-products', { method: 'GET' });
       const nextMenu = menuFromAdminSnapshot(snapshot);
       setMenu(nextMenu);
       setDataSource('supabase-admin');
@@ -1916,16 +1964,16 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   }
 
   useEffect(() => {
-    if (unlocked && isSupabaseConfigured) {
+    if (adminSession && isSupabaseConfigured) {
       reloadAdminMenu();
       loadOrders();
     }
-  }, [unlocked]);
+  }, [adminSession]);
 
   async function persistProduct(category, product, method = 'PATCH') {
     if (!isSupabaseConfigured) return null;
     try {
-      const snapshot = await adminRequest('admin-products', { method, pin, body: { product, category } });
+      const snapshot = await adminRequest('admin-products', { method, body: { product, category } });
       setMenu(menuFromAdminSnapshot(snapshot));
       setDataSource('supabase-admin');
       setAdminStatus('Cambio guardado en Supabase.');
@@ -1940,7 +1988,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   async function persistCategory(category, method = 'POST') {
     if (!isSupabaseConfigured) return;
     try {
-      const snapshot = await adminRequest('admin-categories', { method, pin, body: { category, id: category.supabaseCategoryId, slug: category.id, name: category.name, sortOrder: category.sortOrder } });
+      const snapshot = await adminRequest('admin-categories', { method, body: { category, id: category.supabaseCategoryId, slug: category.id, name: category.name, sortOrder: category.sortOrder } });
       if (snapshot.categories) setMenu(menuFromAdminSnapshot(snapshot));
       setAdminStatus('Categoría guardada en Supabase.');
     } catch (error) {
@@ -1951,7 +1999,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   async function persistSettings(nextBusiness) {
     if (!isSupabaseConfigured) return;
     try {
-      const result = await adminRequest('admin-settings', { method: 'PATCH', pin, body: { settings: nextBusiness } });
+      const result = await adminRequest('admin-settings', { method: 'PATCH', body: { settings: nextBusiness } });
       if (result.settings) setBusiness((current) => ({ ...current, ...mapBusinessSettings(result.settings) }));
       setAdminStatus('Configuración guardada en Supabase.');
     } catch (error) {
@@ -1963,7 +2011,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     if (!isSupabaseConfigured) return alert('Configura Supabase antes de migrar.');
     if (!confirm('¿Migrar menú local a Supabase evitando duplicados por nombre/categoría?')) return;
     try {
-      const snapshot = await adminRequest('admin-products', { method: 'POST', pin, body: { action: 'migrate', menu } });
+      const snapshot = await adminRequest('admin-products', { method: 'POST', body: { action: 'migrate', menu } });
       setMenu(menuFromAdminSnapshot(snapshot));
       setDataSource('supabase-admin');
       setAdminStatus('Menú migrado a Supabase correctamente.');
@@ -1991,7 +2039,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       items: category.items.filter((item) => item.id !== itemId)
     }));
     if (isSupabaseConfigured && isSupabaseBackedProduct(product)) {
-      adminRequest('admin-products', { method: 'DELETE', pin, body: { id: productImageKey(product) } })
+      adminRequest('admin-products', { method: 'DELETE', body: { id: productImageKey(product) } })
         .then((snapshot) => setMenu(menuFromAdminSnapshot(snapshot)))
         .catch((error) => setAdminStatus(error.message));
     }
@@ -2038,7 +2086,6 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     try {
       const snapshot = await adminRequest('admin-categories', {
         method: 'PATCH',
-        pin,
         body: {
           action: 'reorder',
           categories: withSortOrder.map((category) => ({ id: category.supabaseCategoryId, slug: category.id, sortOrder: category.sortOrder }))
@@ -2056,7 +2103,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     const category = menu.find((item) => item.id === categoryId);
     if (!category || category.items.length > 0) return alert('Solo puedes eliminar categorías sin productos asignados.');
     setMenu((current) => current.filter((item) => item.id !== categoryId));
-    if (isSupabaseConfigured) adminRequest('admin-categories', { method: 'DELETE', pin, body: { id: category.supabaseCategoryId, slug: category.id } }).catch((error) => setAdminStatus(error.message));
+    if (isSupabaseConfigured) adminRequest('admin-categories', { method: 'DELETE', body: { id: category.supabaseCategoryId, slug: category.id } }).catch((error) => setAdminStatus(error.message));
   }
 
   function moveItemToCategoryName(sourceCategoryId, itemId, name) {
@@ -2199,42 +2246,25 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     }
   }
 
-  if (!unlocked) {
+  if (authLoading || !adminSession) {
     return (
       <section id="admin" className="section admin-login">
-        <div className="panel narrow">
+        <form className="panel narrow" onSubmit={login}>
           <p className="eyebrow">Admin</p>
-          <h2>Panel interno</h2>
-          <p>Demo local para editar menú, disponibilidad, precios y WhatsApp.</p>
-          <label>
-            PIN
-            <input type="password" value={pin} onChange={(event) => setPin(event.target.value)} placeholder="1234" />
-          </label>
-          <button onClick={login}>Entrar</button>
-          <div className="admin-update-summary">
-            <strong>Resumen de actualización</strong>
-            <ul>
-              <li>Productos cargan cost, ingredient_cost, packaging_cost y discount_price desde Supabase.</li>
-              <li>El campo Costo usa product.cost; 0 o null se muestran vacío.</li>
-              <li>El menú público usa precio efectivo: descuento activo válido menor que precio normal; si no, precio normal.</li>
-              <li>Cada producto se edita con estado aislado y se guarda con botón Guardar producto.</li>
-              <li>Ingredientes se agregan con input enfocado, Enter y persistencia al guardar.</li>
-              <li>Descuento activo se guarda explícitamente como discount_active boolean y se recarga desde Supabase.</li>
-              <li>Subida de imágenes usa JSON base64 en lugar de multipart, devuelve JSON claro, valida bucket/env vars y muestra errores legibles.</li>
-              <li>Las imágenes del menú público se pueden abrir en visor con zoom, teclado y navegación.</li>
-              <li>Se prepararon rutas públicas para producto, desayuno destacado y foto del local; faltan los JPG en la rama si aún no cargan.</li>
-              <li>Se actualizó el número de contacto y WhatsApp del negocio a {BUSINESS_PHONE_DISPLAY}.</li>
-            </ul>
-          </div>
-          <p className="small-note">Ojo: este PIN no es seguridad real. Para producción hay que conectar Supabase, Firebase o un backend.</p>
-        </div>
+          <h2>Acceso administrativo</h2>
+          {authLoading ? <p>Verificando sesión...</p> : <p>Ingresa con tu correo y contraseña.</p>}
+          <label>Correo<input type="email" value={loginForm.email} onChange={(event) => setLoginForm((current) => ({ ...current, email: event.target.value }))} autoComplete="email" required /></label>
+          <label>Contraseña<input type="password" value={loginForm.password} onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))} autoComplete="current-password" required /></label>
+          <button type="submit" disabled={authLoading || authStatus === 'Iniciando sesión...' || authStatus === 'Verificando permisos...'}>{authStatus === 'Iniciando sesión...' ? 'Iniciando sesión...' : authStatus === 'Verificando permisos...' ? 'Verificando permisos...' : 'Entrar'}</button>
+          {authStatus && <p className="small-note">{authStatus}</p>}
+        </form>
       </section>
     );
   }
 
-  if (adminView === 'captura') return <ManualOrderCapture menu={menu} pin={pin} onBack={() => setAdminView('inicio')} onSaved={loadOrders} />;
-  if (adminView === 'cortes') return <AdminCuts pin={pin} onBack={() => setAdminView('inicio')} />;
-  if (adminView === 'historico') return <SalesHistory pin={pin} onBack={() => setAdminView('inicio')} />;
+  if (adminView === 'captura') return <ManualOrderCapture menu={menu} onBack={() => setAdminView('inicio')} onSaved={loadOrders} />;
+  if (adminView === 'cortes') return <AdminCuts onBack={() => setAdminView('inicio')} />;
+  if (adminView === 'historico') return <SalesHistory onBack={() => setAdminView('inicio')} />;
 
   const filteredProductMenu = menu.map((category) => ({ ...category, items: category.items.filter((item) => (productFilterCategory === 'all' || category.id === productFilterCategory) && item.name.toLowerCase().includes(productSearch.trim().toLowerCase())) })).filter((category) => category.items.length);
   const filteredProductCount = filteredProductMenu.reduce((sum, category) => sum + category.items.length, 0);
@@ -2432,7 +2462,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
                     category={category}
                     adminCategories={adminCategories}
                     productImages={productImages}
-                    adminPin={pin}
+
                     persistProduct={persistProduct}
                     deleteItem={deleteItem}
                     refreshProductImages={refreshProductImages}
@@ -2450,7 +2480,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
 
 
 
-function ProductOptionsAdmin({ productId, adminPin, initialGroups = [] }) {
+function ProductOptionsAdmin({ productId, initialGroups = [] }) {
   const [groups, setGroups] = useState(initialGroups);
   const [status, setStatus] = useState('Cargando opciones...');
   const [loadError, setLoadError] = useState('');
@@ -2460,7 +2490,7 @@ function ProductOptionsAdmin({ productId, adminPin, initialGroups = [] }) {
     setStatus('Cargando opciones...');
     setLoadError('');
     try {
-      const result = await adminRequest('admin-product-options', { method: 'GET', pin: adminPin, body: { productId } });
+      const result = await adminRequest('admin-product-options', { method: 'GET', body: { productId } });
       setGroups(result.groups || []);
       setStatus((result.groups || []).length ? 'Opciones sincronizadas.' : 'Sin grupos de opciones. Agrega el primero.');
     } catch (error) {
@@ -2469,13 +2499,13 @@ function ProductOptionsAdmin({ productId, adminPin, initialGroups = [] }) {
     }
   }
 
-  useEffect(() => { loadOptions(); }, [productId, adminPin]);
+  useEffect(() => { loadOptions(); }, [productId]);
 
   async function saveOptions() {
     setStatus('Guardando opciones...');
     setLoadError('');
     try {
-      const result = await adminRequest('admin-product-options', { method: 'PUT', pin: adminPin, body: { productId, groups } });
+      const result = await adminRequest('admin-product-options', { method: 'PUT', body: { productId, groups } });
       setGroups(result.groups || []);
       setStatus('Opciones guardadas en Supabase.');
     } catch (error) {
@@ -2518,7 +2548,7 @@ function ProductOptionsAdmin({ productId, adminPin, initialGroups = [] }) {
   </div>;
 }
 
-function AdminProductEditor({ item, category, adminCategories, productImages, adminPin, persistProduct, deleteItem, refreshProductImages, productImagesError }) {
+function AdminProductEditor({ item, category, adminCategories, productImages, persistProduct, deleteItem, refreshProductImages, productImagesError }) {
   const [draft, setDraft] = useState(() => ({ ...item, categoryId: category.id, newIngredientName: '', newIngredientRemovable: true }));
   const [saveStatus, setSaveStatus] = useState('');
   const newIngredientRef = React.useRef(null);
@@ -2630,7 +2660,7 @@ function AdminProductEditor({ item, category, adminCategories, productImages, ad
             item={draft}
             category={category}
             images={productImages[itemKey] || []}
-            adminPin={adminPin}
+
             onSaveProduct={persistProduct}
             refreshProductImages={refreshProductImages}
             productImagesError={productImagesError}
@@ -2688,7 +2718,7 @@ function AdminProductEditor({ item, category, adminCategories, productImages, ad
         </div>
       </div>
 
-      <ProductOptionsAdmin productId={draft.supabaseProductId || draft.id} adminPin={adminPin} initialGroups={draft.optionGroups || []} />
+      <ProductOptionsAdmin productId={draft.supabaseProductId || draft.id} initialGroups={draft.optionGroups || []} />
 
       <div className="admin-product-editor__actions">
         <button className={draft.available !== false ? 'status status--ok' : 'status status--off'} onClick={() => patchDraft({ available: draft.available === false })}>
@@ -2734,7 +2764,7 @@ function fileToBase64(file) {
   });
 }
 
-function ProductImageManager({ item, category, images, adminPin, onSaveProduct, refreshProductImages, productImagesError }) {
+function ProductImageManager({ item, category, images, onSaveProduct, refreshProductImages, productImagesError }) {
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
   const productId = productImageKey(item);
@@ -2769,10 +2799,9 @@ function ProductImageManager({ item, category, images, adminPin, onSaveProduct, 
         const base64 = await fileToBase64(file);
         const response = await fetch('/.netlify/functions/upload-product-image', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: await adminAuthHeaders(),
           body: JSON.stringify({
-            adminPin,
-            productId,
+                        productId,
             fileName: file.name,
             mimeType: file.type,
             base64,
@@ -2816,8 +2845,8 @@ function ProductImageManager({ item, category, images, adminPin, onSaveProduct, 
     try {
       const response = await fetch('/.netlify/functions/upload-product-image', {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminPin, id: image.id, storage_path: image.storage_path })
+        headers: await adminAuthHeaders(),
+        body: JSON.stringify({ id: image.id, storage_path: image.storage_path })
       });
       const result = await parseFunctionResponse(response, 'No se pudo eliminar la imagen.');
       if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo eliminar la imagen.');
