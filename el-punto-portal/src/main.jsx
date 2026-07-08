@@ -116,7 +116,47 @@ async function adminRequest(functionName, { method = 'POST', body = {} } = {}) {
 }
 
 function menuFromAdminSnapshot(snapshot) {
-  return normalizeMenu(normalizeMenuData(snapshot.categories || [], snapshot.products || []));
+  const categories = snapshot.categories || [];
+  const products = snapshot.products || [];
+  const menu = normalizeMenu(normalizeMenuData(categories, products));
+  const categoryIds = new Set(categories.map((category) => category.id));
+  const uncategorizedProducts = products.filter((product) => !product.category_id || !categoryIds.has(product.category_id));
+  if (!uncategorizedProducts.length) return menu;
+  return normalizeMenu([
+    ...menu,
+    {
+      id: 'sin-categoria',
+      name: 'Sin categoría',
+      description: 'Productos sin category_id válido en Supabase.',
+      sortOrder: Number.MAX_SAFE_INTEGER,
+      active: true,
+      items: uncategorizedProducts.map((product, index) => ({
+        id: product.id,
+        supabaseProductId: product.id,
+        isSupabaseProduct: true,
+        name: product.name,
+        description: product.description || '',
+        category: 'Sin categoría',
+        categorySlug: 'sin-categoria',
+        cost: product.cost === null || product.cost === undefined ? null : Number(product.cost),
+        ingredientCost: product.ingredient_cost === null || product.ingredient_cost === undefined ? null : Number(product.ingredient_cost),
+        packagingCost: product.packaging_cost === null || product.packaging_cost === undefined ? null : Number(product.packaging_cost),
+        price: product.price === null || product.price === undefined ? null : Number(product.price),
+        discountPrice: product.discount_price === null || product.discount_price === undefined ? null : Number(product.discount_price),
+        discountActive: product.discount_active === true,
+        priceLabel: product.price_label || (product.price ? undefined : 'Precio por confirmar'),
+        available: product.available !== false,
+        favorite: product.favorite === true,
+        badge: product.badge || '',
+        sortOrder: Number(product.sort_order ?? index),
+        options: Array.isArray(product.options) ? product.options : [],
+        optionGroupsLoaded: product.option_groups_loaded !== false,
+        optionGroups: [],
+        ingredients: normalizeIngredients(product.product_ingredients || []),
+        images: []
+      }))
+    }
+  ]);
 }
 
 function readStorage(key, fallback) {
@@ -1856,7 +1896,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   const [authLoading, setAuthLoading] = useState(true);
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
   const [metrics, setMetrics] = useState(() => readStorage(STORAGE.metrics, defaultMetrics()));
-  const [newProduct, setNewProduct] = useState({ categoryId: menu[0]?.id || 'desayunos', categoryName: '', name: '', price: '', description: '', ingredients: '' });
+  const [newProduct, setNewProduct] = useState({ categoryId: '', name: '', price: '', description: '', ingredients: '' });
   const [newCategoryName, setNewCategoryName] = useState('');
   const [renameDrafts, setRenameDrafts] = useState({});
   const [moveDrafts, setMoveDrafts] = useState({});
@@ -1976,7 +2016,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       const snapshot = await adminRequest('admin-products', { method, body: { product, category } });
       setMenu(menuFromAdminSnapshot(snapshot));
       setDataSource('supabase-admin');
-      setAdminStatus('Cambio guardado en Supabase.');
+      setAdminStatus('Producto guardado');
       await refreshProductImages();
       return snapshot;
     } catch (error) {
@@ -2199,6 +2239,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   }
 
   function addProduct() {
+    if (!newProduct.categoryId) return alert('Elige una categoría.');
     if (!newProduct.name.trim()) return alert('Agrega nombre del producto.');
     const product = {
       id: slugify(newProduct.name),
@@ -2214,10 +2255,9 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       options: {},
       available: true
     };
-    const targetName = newProduct.categoryName.trim();
-    const selectedCategory = adminCategories.find((category) => category.id === newProduct.categoryId);
-    const targetId = targetName ? slugify(targetName) : newProduct.categoryId;
-    const targetCategory = menu.find((category) => category.id === targetId) || { ...createCategory(targetName || selectedCategory?.name || targetId), sortOrder: menu.length };
+    const targetCategory = adminCategories.find((category) => category.id === newProduct.categoryId);
+    if (!targetCategory?.supabaseCategoryId) return alert('Elige una categoría existente.');
+    const targetId = targetCategory.id;
     setMenu((current) => {
       const needsCategory = !current.some((category) => category.id === targetId);
       const withCategory = needsCategory ? [...current, targetCategory] : current;
@@ -2226,8 +2266,8 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         items: [...category.items, product]
       });
     });
-    persistProduct(targetCategory, product, 'POST');
-    setNewProduct({ ...newProduct, categoryName: '', name: '', price: '', description: '', ingredients: '' });
+    persistProduct(targetCategory, { ...product, categoryId: targetCategory.supabaseCategoryId, category_id: targetCategory.supabaseCategoryId }, 'POST');
+    setNewProduct({ categoryId: '', name: '', price: '', description: '', ingredients: '' });
   }
 
   function resetMenu() {
@@ -2437,13 +2477,10 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           <>
             <div className="product-admin-filters"><label>Categoría<select value={productFilterCategory} onChange={(event) => setProductFilterCategory(event.target.value)}><option value="all">Todas las categorías</option>{adminCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label>Buscar producto<input value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="Nombre del producto…" /></label><span className="small-note">{filteredProductCount} resultado(s)</span></div>
             <div className="add-product">
-              <select value={newProduct.categoryId} onChange={(event) => setNewProduct({ ...newProduct, categoryId: event.target.value, categoryName: '' })}>
-                {adminCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+              <select value={newProduct.categoryId} required onChange={(event) => setNewProduct({ ...newProduct, categoryId: event.target.value })}>
+                <option value="" disabled>Elige categoría</option>
+                {adminCategories.filter((category) => category.supabaseCategoryId && category.id !== 'sin-categoria' && category.active !== false).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
               </select>
-              <input placeholder="O nueva categoría" value={newProduct.categoryName} onChange={(event) => setNewProduct({ ...newProduct, categoryName: event.target.value })} list="category-options" />
-              <datalist id="category-options">
-                {adminCategories.map((category) => <option key={category.id} value={category.name} />)}
-              </datalist>
               <input placeholder="Producto" value={newProduct.name} onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })} />
               <input placeholder="Precio" type="number" value={newProduct.price} onChange={(event) => setNewProduct({ ...newProduct, price: event.target.value })} />
               <input placeholder="Descripción" value={newProduct.description} onChange={(event) => setNewProduct({ ...newProduct, description: event.target.value })} />
@@ -2549,15 +2586,15 @@ function ProductOptionsAdmin({ productId, initialGroups = [] }) {
 }
 
 function AdminProductEditor({ item, category, adminCategories, productImages, persistProduct, deleteItem, refreshProductImages, productImagesError }) {
-  const [draft, setDraft] = useState(() => ({ ...item, categoryId: category.id, newIngredientName: '', newIngredientRemovable: true }));
+  const [draft, setDraft] = useState(() => ({ ...item, categoryId: category.id === 'sin-categoria' ? '' : category.id, newIngredientName: '', newIngredientRemovable: true }));
   const [saveStatus, setSaveStatus] = useState('');
   const newIngredientRef = React.useRef(null);
   const itemKey = productImageKey(item) || item.id;
 
   useEffect(() => {
     setDraft((current) => current?.id === item.id
-      ? { ...item, categoryId: current.categoryId || category.id, newIngredientName: current.newIngredientName || '', newIngredientRemovable: current.newIngredientRemovable ?? true }
-      : { ...item, categoryId: category.id, newIngredientName: '', newIngredientRemovable: true });
+      ? { ...item, categoryId: current.categoryId || (category.id === 'sin-categoria' ? '' : category.id), newIngredientName: current.newIngredientName || '', newIngredientRemovable: current.newIngredientRemovable ?? true }
+      : { ...item, categoryId: category.id === 'sin-categoria' ? '' : category.id, newIngredientName: '', newIngredientRemovable: true });
   }, [item, category.id]);
 
   function patchDraft(patch) {
@@ -2599,7 +2636,8 @@ function AdminProductEditor({ item, category, adminCategories, productImages, pe
   }
 
   async function saveProduct() {
-    const targetCategory = adminCategories.find((categoryOption) => categoryOption.id === draft.categoryId) || category;
+    const targetCategory = adminCategories.find((categoryOption) => categoryOption.id === draft.categoryId);
+    if (!targetCategory?.supabaseCategoryId) { setSaveStatus('Elige una categoría válida.'); return; }
     const productToSave = {
       ...draft,
       discountActive: draft.discountActive === true,
@@ -2610,7 +2648,9 @@ function AdminProductEditor({ item, category, adminCategories, productImages, pe
       cost: parseOptionalNumber(draft.cost),
       ingredients: normalizeIngredients(draft.ingredients),
       optionGroupsLoaded: draft.optionGroupsLoaded !== false,
-      optionGroups: draft.optionGroups || []
+      optionGroups: draft.optionGroups || [],
+      categoryId: targetCategory.supabaseCategoryId,
+      category_id: targetCategory.supabaseCategoryId
     };
     console.log('Guardando descuento', productToSave.name, {
       price: productToSave.price,
@@ -2620,7 +2660,7 @@ function AdminProductEditor({ item, category, adminCategories, productImages, pe
     setSaveStatus('Guardando...');
     try {
       await persistProduct(targetCategory, productToSave, 'PATCH');
-      setSaveStatus('Guardado');
+      setSaveStatus('Producto guardado');
     } catch (error) {
       setSaveStatus(error.message || 'Error al guardar producto.');
     }
@@ -2651,8 +2691,9 @@ function AdminProductEditor({ item, category, adminCategories, productImages, pe
         </label>
         <label>
           Categoría
-          <select value={draft.categoryId || category.id} onChange={(event) => patchDraft({ categoryId: event.target.value })}>
-            {adminCategories.map((categoryOption) => <option key={categoryOption.id} value={categoryOption.id}>{categoryOption.name}</option>)}
+          <select value={draft.categoryId || ''} required onChange={(event) => patchDraft({ categoryId: event.target.value })}>
+            <option value="" disabled>Elige categoría</option>
+            {adminCategories.filter((categoryOption) => categoryOption.supabaseCategoryId && categoryOption.id !== 'sin-categoria' && categoryOption.active !== false).map((categoryOption) => <option key={categoryOption.id} value={categoryOption.id}>{categoryOption.name}</option>)}
           </select>
         </label>
         <div className="admin-image-slot">

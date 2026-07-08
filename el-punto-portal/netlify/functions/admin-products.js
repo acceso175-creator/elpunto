@@ -1,6 +1,32 @@
 import { isAuthError, requireAdmin } from './_shared/requireAdmin.js';
 import { ensureCategory, getSupabaseAdmin, json, menuSnapshot, parseBody, slugify } from './_supabaseAdmin.js';
 
+function badRequest(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
+function requestedCategoryId(product = {}, category = {}, body = {}) {
+  return product.categoryId || product.category_id || body.categoryId || body.category_id || category.supabaseCategoryId || category.uuid || (isUuid(category.id) ? category.id : null);
+}
+
+async function getExistingCategory(supabase, categoryId) {
+  if (!isUuid(categoryId)) throw badRequest('La categoría seleccionada no existe.');
+  const { data, error } = await supabase
+    .from('categories')
+    .select('id, name, slug, sort_order, active')
+    .eq('id', categoryId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw badRequest('La categoría seleccionada no existe.');
+  return data;
+}
+
 function isOptionsSchemaCacheError(error) {
   return /options.*schema cache|schema cache.*options|Could not find.*options/i.test(error?.message || '');
 }
@@ -86,8 +112,12 @@ async function writeProduct(supabase, payload, includeOptions = true) {
     .single();
 }
 
-async function upsertProduct(supabase, product, category) {
-  const savedCategory = await ensureCategory(supabase, category);
+async function upsertProduct(supabase, product, category, body = {}, { allowCreateCategory = false } = {}) {
+  const categoryId = requestedCategoryId(product, category, body);
+  if (!categoryId && !allowCreateCategory) throw badRequest('La categoría seleccionada no existe.');
+  const savedCategory = categoryId
+    ? await getExistingCategory(supabase, categoryId)
+    : await ensureCategory(supabase, category);
   const payload = cleanProductPayload(product, savedCategory.id);
   if (!payload.name) throw new Error('El producto necesita nombre.');
   const existing = payload.id ? null : await findExistingProduct(supabase, payload.name, savedCategory.id);
@@ -116,19 +146,19 @@ export async function handler(event) {
         const products = [];
         for (const category of menu) {
           for (const item of category.items || []) {
-            products.push(await upsertProduct(supabase, item, category));
+            products.push(await upsertProduct(supabase, item, category, {}, { allowCreateCategory: true }));
           }
         }
         return json(200, { ok: true, count: products.length, ...(await menuSnapshot(supabase)) });
       }
-      const product = await upsertProduct(supabase, body.product || body, body.category || { name: body.categoryName, slug: body.categorySlug || slugify(body.categoryName) });
+      const product = await upsertProduct(supabase, body.product || body, body.category || { name: body.categoryName, slug: body.categorySlug || slugify(body.categoryName) }, body);
       return json(200, { product, ...(await menuSnapshot(supabase)) });
     }
     if (event.httpMethod === 'PATCH') {
       const product = body.product || body;
       if (!product.id && !product.supabaseProductId) return json(400, { error: 'Falta id de producto.' });
       const category = body.category || { name: body.categoryName, slug: body.categorySlug };
-      const saved = await upsertProduct(supabase, product, category);
+      const saved = await upsertProduct(supabase, product, category, body);
       return json(200, { product: saved, ...(await menuSnapshot(supabase)) });
     }
     if (event.httpMethod === 'DELETE') {
@@ -140,6 +170,6 @@ export async function handler(event) {
     }
     return json(405, { error: 'Método no permitido.' });
   } catch (error) {
-    return json(500, { error: error.message || 'Error inesperado en productos.' });
+    return json(error.statusCode || 500, { error: error.message || 'Error inesperado en productos.' });
   }
 }
