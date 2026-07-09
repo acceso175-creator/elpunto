@@ -1,5 +1,6 @@
 import { isAuthError, requireAdmin } from './_shared/requireAdmin.js';
 import { getSupabaseAdmin, json, parseBody, supabaseErrorDetails } from './_supabaseAdmin.js';
+import { getParam, invalidUuidResponse, UUID_RE } from './_shared/params.js';
 
 function fail(error, context, statusCode = 500) {
   const supabaseError = supabaseErrorDetails(error);
@@ -12,7 +13,7 @@ function withContext(error, context) {
 }
 
 function isUuid(value) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+  return UUID_RE.test(String(value || ''));
 }
 
 function cleanGroups(groups, productId) {
@@ -96,11 +97,11 @@ async function saveOptions(supabase, productId, groups) {
 }
 
 export async function handler(event) {
-  const body = parseBody(event);
-    const admin = await requireAdmin(event);
-    if (isAuthError(admin)) return json(admin.statusCode, admin.body);
-  const productId = body.productId || event.queryStringParameters?.productId;
-  if (!productId) return json(400, { error: 'Falta productId.' });
+  const body = event.httpMethod === 'GET' ? {} : parseBody(event);
+  const admin = await requireAdmin(event);
+  if (isAuthError(admin)) return json(admin.statusCode, admin.body);
+  const productId = getParam(event.queryStringParameters, 'productId') || getParam(body, 'productId');
+  if (!isUuid(productId)) return invalidUuidResponse(json, 'productId', productId);
   try {
     const supabase = getSupabaseAdmin();
     if (event.httpMethod === 'GET') return json(200, { productId, groups: await loadOptions(supabase, productId) });

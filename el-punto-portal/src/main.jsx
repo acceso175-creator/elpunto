@@ -95,7 +95,13 @@ async function adminAuthHeaders() {
 async function adminRequest(functionName, { method = 'POST', body = {} } = {}) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error('La sesión administrativa expiró');
-  const query = method === 'GET' ? new URLSearchParams({ t: String(Date.now()), ...Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined && value !== null).map(([key, value]) => [key, String(value)])) }) : null;
+  const query = method === 'GET' ? new URLSearchParams() : null;
+  if (query) {
+    query.set('t', String(Date.now()));
+    Object.entries(body).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) query.set(key, String(value));
+    });
+  }
   const endpoint = `/.netlify/functions/${functionName}${query ? `?${query}` : ''}`;
   const response = await fetch(endpoint, {
     method,
@@ -2569,17 +2575,19 @@ function OptionTemplatesLibrary({ templates, status, onReload, onSave, onDelete 
 }
 
 function ProductOptionsAdmin({ productId, initialGroups = [], optionTemplates = [], onTemplatesChanged }) {
+  const validProductId = isUuid(productId) ? productId : '';
   const [groups, setGroups] = useState(initialGroups);
   const [status, setStatus] = useState('Cargando opciones...');
   const [loadError, setLoadError] = useState('');
   const [templateId, setTemplateId] = useState('');
 
   async function loadOptions() {
-    if (!isSupabaseConfigured || !productId) { setStatus('Opciones disponibles al guardar el producto en Supabase.'); return; }
+    if (!isSupabaseConfigured) { setStatus('Opciones disponibles al configurar Supabase.'); return; }
+    if (!validProductId) { setStatus('Guarda primero el producto antes de agregar opciones.'); setGroups([]); return; }
     setStatus('Cargando opciones...');
     setLoadError('');
     try {
-      const [direct, templated] = await Promise.all([adminRequest('admin-product-options', { method: 'GET', body: { productId } }), adminRequest('admin-product-option-templates', { method: 'GET', body: { productId } })]);
+      const [direct, templated] = await Promise.all([adminRequest('admin-product-options', { method: 'GET', body: { productId: validProductId } }), adminRequest('admin-product-option-templates', { method: 'GET', body: { productId: validProductId } })]);
       const ownNames = new Set((direct.groups || []).map((g) => String(g.name || '').trim().toLowerCase()));
       setGroups([...(direct.groups || []), ...(templated.groups || []).filter((g) => !ownNames.has(String(g.name || '').trim().toLowerCase()))]);
       const result = { groups: [...(direct.groups || []), ...(templated.groups || [])] };
@@ -2590,13 +2598,14 @@ function ProductOptionsAdmin({ productId, initialGroups = [], optionTemplates = 
     }
   }
 
-  useEffect(() => { loadOptions(); }, [productId]);
+  useEffect(() => { loadOptions(); }, [validProductId]);
 
   async function saveOptions() {
+    if (!validProductId) { setStatus('Guarda primero el producto antes de agregar opciones.'); return; }
     setStatus('Guardando opciones...');
     setLoadError('');
     try {
-      const result = await adminRequest('admin-product-options', { method: 'PUT', body: { productId, groups: ownGroups } });
+      const result = await adminRequest('admin-product-options', { method: 'PUT', body: { productId: validProductId, groups: ownGroups } });
       setGroups(result.groups || []);
       setStatus('Opciones guardadas en Supabase.');
     } catch (error) {
@@ -2605,18 +2614,19 @@ function ProductOptionsAdmin({ productId, initialGroups = [], optionTemplates = 
     }
   }
 
+  const templateGroups = groups.filter((group) => group.isTemplate);
   const ownGroups = groups.filter((group) => !group.isTemplate);
-  async function assignTemplate() { if (!templateId) return; setStatus('Asignando plantilla...'); try { await adminRequest('admin-product-option-templates', { method: 'POST', body: { productId, templateId } }); setTemplateId(''); await loadOptions(); await onTemplatesChanged?.(); } catch (error) { setLoadError(error.message); } }
-  async function removeTemplate(group) { if (!confirm('¿Quitar esta plantilla del producto? La plantilla global no se elimina.')) return; try { await adminRequest('admin-product-option-templates', { method: 'DELETE', body: { productId, templateId: group.templateId } }); await loadOptions(); await onTemplatesChanged?.(); } catch (error) { setLoadError(error.message); } }
-  async function unlinkTemplate(group) { if (!confirm('Se copiará como grupo propio para personalizar solo este producto. ¿Continuar?')) return; try { await adminRequest('admin-product-option-templates', { method: 'PATCH', body: { productId, templateId: group.templateId, action: 'unlink', sortOrder: group.sortOrder } }); await loadOptions(); await onTemplatesChanged?.(); } catch (error) { setLoadError(error.message); } }
-  const onChange = (next) => setGroups([...groups.filter((group) => group.isTemplate), ...next]);
-  const patchGroup = (index, patch) => onChange(groups.map((group, i) => i === index ? { ...group, ...patch } : group));
-  const removeGroup = (index) => onChange(groups.filter((_, i) => i !== index));
-  const addGroup = () => onChange([...groups, { id: `new-group-${Date.now()}`, name: '', required: false, selectionType: 'single', minSelect: 0, maxSelect: 1, sortOrder: groups.length, isActive: true, options: [] }]);
-  const patchOption = (groupIndex, optionIndex, patch) => patchGroup(groupIndex, { options: groups[groupIndex].options.map((option, i) => i === optionIndex ? { ...option, ...patch } : option) });
-  const addOption = (groupIndex) => patchGroup(groupIndex, { options: [...(groups[groupIndex].options || []), { id: `new-option-${Date.now()}`, name: '', priceDelta: 0, isActive: true, sortOrder: groups[groupIndex].options?.length || 0 }] });
-  const removeOption = (groupIndex, optionIndex) => patchGroup(groupIndex, { options: groups[groupIndex].options.filter((_, i) => i !== optionIndex) });
-  return <div className="admin-options"><div className="admin-subheader"><strong>Opciones del producto</strong><div className="admin-actions"><button type="button" className="button--ghost" onClick={loadOptions}>Recargar</button><button type="button" className="button--ghost" onClick={addGroup}>Agregar grupo</button><select value={templateId} onChange={(e) => setTemplateId(e.target.value)}><option value="">Usar plantilla</option>{optionTemplates.filter((t) => t.active !== false).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select><button type="button" className="button--ghost" onClick={assignTemplate} disabled={!templateId}>Asignar</button><button type="button" onClick={saveOptions} disabled={status === 'Guardando opciones...'}>Guardar opciones</button></div></div>
+  async function assignTemplate() { if (!templateId || !validProductId) return; setStatus('Asignando plantilla...'); try { await adminRequest('admin-product-option-templates', { method: 'POST', body: { productId: validProductId, templateId } }); setTemplateId(''); await loadOptions(); await onTemplatesChanged?.(); } catch (error) { setLoadError(error.message); } }
+  async function removeTemplate(group) { if (!validProductId) return; if (!confirm('¿Quitar esta plantilla del producto? La plantilla global no se elimina.')) return; try { await adminRequest('admin-product-option-templates', { method: 'DELETE', body: { productId: validProductId, templateId: group.templateId } }); await loadOptions(); await onTemplatesChanged?.(); } catch (error) { setLoadError(error.message); } }
+  async function unlinkTemplate(group) { if (!validProductId) return; if (!confirm('Se copiará como grupo propio para personalizar solo este producto. ¿Continuar?')) return; try { await adminRequest('admin-product-option-templates', { method: 'PATCH', body: { productId: validProductId, templateId: group.templateId, action: 'unlink', sortOrder: group.sortOrder } }); await loadOptions(); await onTemplatesChanged?.(); } catch (error) { setLoadError(error.message); } }
+  const onChange = (nextOwnGroups) => setGroups([...templateGroups, ...nextOwnGroups]);
+  const patchGroup = (index, patch) => onChange(ownGroups.map((group, i) => i === index ? { ...group, ...patch } : group));
+  const removeGroup = (index) => onChange(ownGroups.filter((_, i) => i !== index));
+  const addGroup = () => onChange([...ownGroups, { id: `new-group-${Date.now()}`, name: '', required: false, selectionType: 'single', minSelect: 0, maxSelect: 1, sortOrder: ownGroups.length, isActive: true, options: [] }]);
+  const patchOption = (groupIndex, optionIndex, patch) => patchGroup(groupIndex, { options: ownGroups[groupIndex].options.map((option, i) => i === optionIndex ? { ...option, ...patch } : option) });
+  const addOption = (groupIndex) => patchGroup(groupIndex, { options: [...(ownGroups[groupIndex].options || []), { id: `new-option-${Date.now()}`, name: '', priceDelta: 0, isActive: true, sortOrder: ownGroups[groupIndex].options?.length || 0 }] });
+  const removeOption = (groupIndex, optionIndex) => patchGroup(groupIndex, { options: ownGroups[groupIndex].options.filter((_, i) => i !== optionIndex) });
+  return <div className="admin-options"><div className="admin-subheader"><strong>Opciones del producto</strong><div className="admin-actions"><button type="button" className="button--ghost" onClick={loadOptions}>Recargar</button><button type="button" className="button--ghost" onClick={addGroup}>Agregar grupo</button><select value={templateId} onChange={(e) => setTemplateId(e.target.value)}><option value="">Usar plantilla</option>{optionTemplates.filter((t) => t.active !== false).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select><button type="button" className="button--ghost" onClick={assignTemplate} disabled={!templateId || !validProductId}>Asignar</button><button type="button" onClick={saveOptions} disabled={status === 'Guardando opciones...' || !validProductId}>Guardar opciones</button></div></div>
     {loadError && <p className="option-error" role="alert">Error real de Supabase: {loadError}</p>}
     {status && <p className="small-note">{status}</p>}
     {!groups.length && <button type="button" className="button--ghost" onClick={addGroup}>Agregar grupo de opciones</button>}
@@ -2818,7 +2828,7 @@ function AdminProductEditor({ item, category, adminCategories, productImages, op
         </div>
       </div>
 
-      <ProductOptionsAdmin productId={draft.supabaseProductId || draft.id} initialGroups={draft.optionGroups || []} optionTemplates={optionTemplates} onTemplatesChanged={onTemplatesChanged} />
+      <ProductOptionsAdmin productId={isUuid(draft.supabaseProductId || draft.id) ? (draft.supabaseProductId || draft.id) : ''} initialGroups={draft.optionGroups || []} optionTemplates={optionTemplates} onTemplatesChanged={onTemplatesChanged} />
 
       <div className="admin-product-editor__actions">
         <button className={draft.available !== false ? 'status status--ok' : 'status status--off'} onClick={() => patchDraft({ available: draft.available === false })}>
