@@ -1,4 +1,4 @@
-import { dedupeOptions, normalizeOptionName, optionDedupKey } from './_shared/optionDedup.js';
+import { dedupeOptions, normalizeOptionName, optionDedupKey, sortOptionGroups } from './_shared/optionDedup.js';
 import { getSupabaseAdmin, json, supabaseErrorDetails } from './_supabaseAdmin.js';
 
 function fail(error, table) {
@@ -56,7 +56,7 @@ export async function handler(event) {
     const groupSignature = (group) => [group.product_id, normalizeOptionName(group.name), group.selection_type, dedupeOptions(optionsByGroup.get(group.id) || []).map(optionDedupKey).sort().join(',')].join('|');
     const bySignature = new Map();
     [...templateGroups, ...directGroups].forEach((group) => { if (!bySignature.has(groupSignature(group))) bySignature.set(groupSignature(group), group); });
-    const groups = [...bySignature.values()].sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
+    const groups = sortOptionGroups([...bySignature.values()]);
     const groupIdsToReturn = new Set(groups.map((group) => group.id));
     const options = groups.flatMap((group) => dedupeOptions(optionsByGroup.get(group.id) || [])).filter((option) => groupIdsToReturn.has(option.group_id));
     return json(200, { groups, options });

@@ -269,6 +269,24 @@ function productOptions(product) {
   return Array.isArray(product?.options) ? product.options : [];
 }
 
+function effectiveOptionGroupSortOrder(group) {
+  const raw = Number(group?.sortOrder ?? group?.sort_order ?? 0);
+  if (!group?.required && Boolean(group?.templateId ?? group?.template_id) && raw === 0) return 100;
+  return Number.isFinite(raw) ? raw : 0;
+}
+
+function sortOptionGroups(groups) {
+  return [...(Array.isArray(groups) ? groups : [])].sort((a, b) => {
+    const requiredDiff = Number(Boolean(b.required)) - Number(Boolean(a.required));
+    if (requiredDiff !== 0) return requiredDiff;
+    const orderDiff = effectiveOptionGroupSortOrder(a) - effectiveOptionGroupSortOrder(b);
+    if (orderDiff !== 0) return orderDiff;
+    const aTemplate = Boolean(a.templateId ?? a.template_id);
+    const bTemplate = Boolean(b.templateId ?? b.template_id);
+    return Number(aTemplate) - Number(bTemplate);
+  });
+}
+
 function activeOptionGroups(product) {
   const groups = (Array.isArray(product?.optionGroups) ? product.optionGroups : [])
     .filter((group) => group.isActive !== false)
@@ -279,7 +297,7 @@ function activeOptionGroups(product) {
   [...groups.filter((group) => group.isTemplate), ...groups.filter((group) => !group.isTemplate)].forEach((group) => {
     if (!bySignature.has(signature(group))) bySignature.set(signature(group), group);
   });
-  return [...bySignature.values()].sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
+  return sortOptionGroups([...bySignature.values()]);
 }
 
 function optionGroupInstruction(group) {
@@ -884,6 +902,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
   const optionList = productOptions(item);
   const optionGroups = activeOptionGroups(item);
   const [selectedOptionIds, setSelectedOptionIds] = useState({});
+  const [expandedOptionGroups, setExpandedOptionGroups] = useState({});
   const [optionError, setOptionError] = useState('');
   const [selectedOptions, setSelectedOptions] = useState(() => {
     const options = {};
@@ -936,6 +955,7 @@ function ProductCard({ item, categoryId, addToCart, images }) {
 
   function toggleProductOption(group, option) {
     setOptionError('');
+    if (!group.required) setExpandedOptionGroups((current) => ({ ...current, [group.id]: true }));
     setSelectedOptionIds((current) => {
       const selected = current[group.id] || [];
       if (group.selectionType === 'single') return { ...current, [group.id]: selected.includes(option.id) && !group.required ? [] : [option.id] };
@@ -943,6 +963,35 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       if (selected.length >= group.maxSelect) return current;
       return { ...current, [group.id]: [...selected, option.id] };
     });
+  }
+
+
+  function isOptionGroupExpanded(group) {
+    const selectedCount = (selectedOptionIds[group.id] || []).length;
+    if (group.required || selectedCount > 0) return true;
+    return expandedOptionGroups[group.id] === true;
+  }
+
+  function toggleOptionGroupOpen(group) {
+    if (group.required) return;
+    setExpandedOptionGroups((current) => ({ ...current, [group.id]: !isOptionGroupExpanded(group) }));
+  }
+
+  function optionLabel(option) {
+    return `${option.name}${Number(option.priceDelta) > 0 ? ` +${formatMoney(option.priceDelta)}` : ''}`;
+  }
+
+  function optionGroupSummary(group) {
+    const selected = (selectedOptionIds[group.id] || [])
+      .map((id) => group.options.find((candidate) => candidate.id === id))
+      .filter(Boolean);
+    if (selected.length) return `Seleccionado: ${selected.map(optionLabel).join(', ')}`;
+    if (group.required) return optionGroupInstruction(group);
+    const lowestExtra = group.options.reduce((min, option) => {
+      const value = Number(option.priceDelta) || 0;
+      return min === null || value < min ? value : min;
+    }, null);
+    return lowestExtra && lowestExtra > 0 ? `Opcional · desde ${formatMoney(lowestExtra)}` : 'Opcional';
   }
 
   function handleAdd() {
@@ -1021,15 +1070,23 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       )}
 
       {optionGroups.length > 0 && <div className="product-options">
-        {optionGroups.map((group) => <fieldset key={group.id} className="product-option-group">
-          <legend>{group.name}{group.required ? ' *' : ''}</legend>
-          <p className="product-option-group__instruction">{optionGroupInstruction(group)}</p>
-          {!group.options.length && <p className="small-note">Sin opciones disponibles.</p>}
-          <div className="option-chips">{group.options.map((option) => {
-            const selected = (selectedOptionIds[group.id] || []).includes(option.id);
-            return <button type="button" key={option.id} className={selected ? 'option-chip option-chip--selected' : 'option-chip'} aria-pressed={selected} onClick={() => toggleProductOption(group, option)}>{option.name}{Number(option.priceDelta) > 0 ? ` +${formatMoney(option.priceDelta)}` : ''}</button>;
-          })}</div>
-        </fieldset>)}
+        {optionGroups.map((group) => {
+          const expanded = isOptionGroupExpanded(group);
+          return <section key={group.id} className={expanded ? 'product-option-group product-option-group--open' : 'product-option-group product-option-group--collapsed'}>
+            <button type="button" className="product-option-group__header" onClick={() => toggleOptionGroupOpen(group)} aria-expanded={expanded}>
+              <span className="product-option-group__title"><span aria-hidden="true">{expanded ? '−' : '+'}</span>{group.name}{group.required ? ' *' : ''}</span>
+              <span className="product-option-group__summary">{optionGroupSummary(group)}</span>
+            </button>
+            {expanded && <div className="product-option-group__body">
+              <p className="product-option-group__instruction">{optionGroupInstruction(group)}</p>
+              {!group.options.length && <p className="small-note">Sin opciones disponibles.</p>}
+              <div className="option-chips option-chips--stacked">{group.options.map((option) => {
+                const selected = (selectedOptionIds[group.id] || []).includes(option.id);
+                return <button type="button" key={option.id} className={selected ? 'option-chip option-chip--selected' : 'option-chip'} aria-pressed={selected} onClick={() => toggleProductOption(group, option)}>{optionLabel(option)}</button>;
+              })}</div>
+            </div>}
+          </section>;
+        })}
         {optionError && <p className="option-error" role="alert">{optionError}</p>}
       </div>}
       {optionGroups.length === 0 && optionList.length > 0 && <div className="modifiers">{optionList.map((option) => <label key={option.name}>{option.name}<select value={selectedOptions[option.name] || ''} onChange={(event) => setSelectedOptions((current) => ({ ...current, [option.name]: event.target.value }))}>{(option.values || []).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>)}</div>}
@@ -2654,9 +2711,10 @@ function ProductOptionsAdmin({ productId, initialGroups = [], optionTemplates = 
 
   const templateGroups = groups.filter((group) => group.isTemplate);
   const ownGroups = groups.filter((group) => !group.isTemplate);
-  async function assignTemplate() { if (!templateId || !validProductId) return; setStatus('Asignando plantilla...'); try { await adminRequest('admin-product-option-templates', { method: 'POST', body: { productId: validProductId, templateId } }); setTemplateId(''); await loadOptions(); await onTemplatesChanged?.(); } catch (error) { setLoadError(error.message); } }
+  async function assignTemplate() { if (!templateId || !validProductId) return; const selectedTemplate = optionTemplates.find((template) => template.id === templateId); const sortOrder = normalizeOptionName(selectedTemplate?.name) === 'hazlo combo' ? 100 : 0; setStatus('Asignando plantilla...'); try { await adminRequest('admin-product-option-templates', { method: 'POST', body: { productId: validProductId, templateId, sortOrder } }); setTemplateId(''); await loadOptions(); await onTemplatesChanged?.(); } catch (error) { setLoadError(error.message); } }
   async function removeTemplate(group) { if (!validProductId) return; if (!confirm('¿Quitar esta plantilla del producto? La plantilla global no se elimina.')) return; try { await adminRequest('admin-product-option-templates', { method: 'DELETE', body: { productId: validProductId, templateId: group.templateId } }); await loadOptions(); await onTemplatesChanged?.(); } catch (error) { setLoadError(error.message); } }
   async function unlinkTemplate(group) { if (!validProductId) return; if (!confirm('Se copiará como grupo propio para personalizar solo este producto. ¿Continuar?')) return; try { await adminRequest('admin-product-option-templates', { method: 'PATCH', body: { productId: validProductId, templateId: group.templateId, action: 'unlink', sortOrder: group.sortOrder } }); await loadOptions(); await onTemplatesChanged?.(); } catch (error) { setLoadError(error.message); } }
+  async function updateTemplateSortOrder(group, sortOrder) { if (!validProductId) return; try { await adminRequest('admin-product-option-templates', { method: 'PATCH', body: { productId: validProductId, templateId: group.templateId, action: 'sort', sortOrder } }); await loadOptions(); await onTemplatesChanged?.(); } catch (error) { setLoadError(error.message); } }
   const onChange = (nextOwnGroups) => setGroups([...templateGroups, ...nextOwnGroups]);
   const patchGroup = (index, patch) => onChange(ownGroups.map((group, i) => i === index ? { ...group, ...patch } : group));
   const removeGroup = (index) => onChange(ownGroups.filter((_, i) => i !== index));
@@ -2668,7 +2726,7 @@ function ProductOptionsAdmin({ productId, initialGroups = [], optionTemplates = 
     {loadError && <p className="option-error" role="alert">Error real de Supabase: {loadError}</p>}
     {status && <p className="small-note">{status}</p>}
     {!groups.length && <button type="button" className="button--ghost" onClick={addGroup}>Agregar grupo de opciones</button>}
-    {groups.filter((group) => group.isTemplate).map((group) => <div className="option-group-editor" key={group.id}><div className="admin-subheader"><strong>{group.name}</strong><span className="status">Plantilla global</span><div className="admin-actions"><button type="button" className="button--ghost" onClick={() => unlinkTemplate(group)}>Desvincular y personalizar</button><button type="button" className="button--danger" onClick={() => removeTemplate(group)}>Quitar plantilla</button></div></div><p className="small-note">Edita campos y opciones desde la biblioteca de plantillas para sincronizar todos los productos.</p><div className="option-chips">{(group.options || []).map((option) => <span className="option-chip" key={option.id}>{option.name}{option.priceDelta ? ` +${formatMoney(option.priceDelta)}` : ''}</span>)}</div></div>)}
+    {groups.filter((group) => group.isTemplate).map((group) => <div className="option-group-editor" key={group.id}><div className="admin-subheader"><strong>{group.name}</strong><span className="status">Plantilla global</span><div className="admin-actions"><button type="button" className="button--ghost" onClick={() => unlinkTemplate(group)}>Desvincular y personalizar</button><button type="button" className="button--danger" onClick={() => removeTemplate(group)}>Quitar plantilla</button></div></div><p className="small-note">Edita campos y opciones desde la biblioteca de plantillas para sincronizar todos los productos.</p><label>Orden de asignación<input type="number" value={group.sortOrder ?? 100} onChange={(e) => updateTemplateSortOrder(group, Number(e.target.value) || 0)} /></label><div className="option-chips">{(group.options || []).map((option) => <span className="option-chip" key={option.id}>{option.name}{option.priceDelta ? ` +${formatMoney(option.priceDelta)}` : ''}</span>)}</div></div>)}
     {ownGroups.map((group, groupIndex) => <div className="option-group-editor" key={group.id || groupIndex}>
       <div className="option-group-editor__grid">
         <label>Nombre del grupo<input value={group.name || ''} onChange={(e) => patchGroup(groupIndex, { name: e.target.value })} /></label>

@@ -82,6 +82,17 @@ export async function handler(event) {
       return json(200, { groups: await assigned(supabase, productId) });
     }
 
+    if (event.httpMethod === 'PATCH' && getParam(body, 'action') === 'sort') {
+      if (!isUuid(templateId)) return bad('templateId inválido.');
+      const result = await supabase
+        .from('product_option_templates')
+        .update({ sort_order: Number(getParam(body, 'sortOrder') || 0) })
+        .eq('product_id', productId)
+        .eq('template_id', templateId);
+      if (result.error) throw result.error;
+      return json(200, { groups: await assigned(supabase, productId) });
+    }
+
     if (event.httpMethod === 'PATCH' && getParam(body, 'action') === 'unlink') {
       if (!isUuid(templateId)) return bad('templateId inválido.');
       const templateResult = await supabase.from('option_group_templates').select('*').eq('id', templateId).single();

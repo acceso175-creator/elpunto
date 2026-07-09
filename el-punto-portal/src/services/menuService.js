@@ -86,6 +86,25 @@ function normalizeOptionGroup(group, index = 0) {
   };
 }
 
+
+function effectiveOptionGroupSortOrder(group) {
+  const raw = Number(group?.sortOrder ?? group?.sort_order ?? 0);
+  if (!group?.required && Boolean(group?.templateId ?? group?.template_id) && raw === 0) return 100;
+  return Number.isFinite(raw) ? raw : 0;
+}
+
+function sortOptionGroups(groups = []) {
+  return [...(Array.isArray(groups) ? groups : [])].sort((a, b) => {
+    const requiredDiff = Number(Boolean(b.required)) - Number(Boolean(a.required));
+    if (requiredDiff !== 0) return requiredDiff;
+    const orderDiff = effectiveOptionGroupSortOrder(a) - effectiveOptionGroupSortOrder(b);
+    if (orderDiff !== 0) return orderDiff;
+    const aTemplate = Boolean(a.templateId ?? a.template_id);
+    const bTemplate = Boolean(b.templateId ?? b.template_id);
+    return Number(aTemplate) - Number(bTemplate);
+  });
+}
+
 function normalizeImage(image, index = 0) {
   return {
     id: image.id,
@@ -144,7 +163,7 @@ function productFromRow(row, category, index = 0) {
     sortOrder: Number(row.sort_order ?? index),
     options: Array.isArray(row.options) ? row.options : [],
     optionGroupsLoaded: row.option_groups_loaded !== false,
-    optionGroups: (row.product_option_groups || []).map(normalizeOptionGroup).filter((group) => group.name).sort((a, b) => a.sortOrder - b.sortOrder),
+    optionGroups: sortOptionGroups((row.product_option_groups || []).map(normalizeOptionGroup).filter((group) => group.name)),
     ingredients: (row.product_ingredients || [])
       .map(normalizeIngredient)
       .filter((ingredient) => ingredient.name)
