@@ -38,6 +38,8 @@ function normalizeProductOption(option, index = 0) {
   return {
     id: option.id,
     groupId: option.group_id || option.groupId,
+    templateId: option.template_id || option.templateId || null,
+    templateItemId: option.template_item_id || option.templateItemId || null,
     name: String(option.name || '').trim(),
     priceDelta: Number(option.price_delta ?? option.priceDelta ?? 0),
     isActive: option.is_active !== false,
@@ -52,6 +54,8 @@ function normalizeOptionGroup(group, index = 0) {
   return {
     id: group.id,
     productId: group.product_id || group.productId,
+    templateId: group.template_id || group.templateId || null,
+    isTemplate: group.is_template === true || group.isTemplate === true,
     name: String(group.name || '').trim(),
     required,
     selectionType,

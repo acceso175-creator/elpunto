@@ -20,17 +20,39 @@ export async function handler(event) {
     const groupsResult = await groupsQuery;
     if (groupsResult.error) return fail(groupsResult.error, 'product_option_groups');
 
-    const groups = groupsResult.data || [];
-    const groupIds = groups.map((group) => group.id);
-    if (!groupIds.length) return json(200, { groups: [], options: [] });
-    const optionsResult = await supabase
-      .from('product_options')
-      .select('id, group_id, name, price_delta, is_active, sort_order')
-      .in('group_id', groupIds)
-      .eq('is_active', true)
-      .order('sort_order', { ascending: true });
+    const directGroups = groupsResult.data || [];
+    const groupIds = directGroups.map((group) => group.id);
+    const optionsResult = groupIds.length
+      ? await supabase
+        .from('product_options')
+        .select('id, group_id, name, price_delta, is_active, sort_order')
+        .in('group_id', groupIds)
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true })
+      : { data: [], error: null };
     if (optionsResult.error) return fail(optionsResult.error, 'product_options');
-    return json(200, { groups, options: optionsResult.data || [] });
+
+    let assignmentsQuery = supabase
+      .from('product_option_templates')
+      .select('id, product_id, template_id, sort_order, active, option_group_templates(id, name, required, selection_type, min_select, max_select, active)')
+      .eq('active', true)
+      .order('sort_order', { ascending: true });
+    if (productIds.length) assignmentsQuery = assignmentsQuery.in('product_id', productIds);
+    const assignmentsResult = await assignmentsQuery;
+    if (assignmentsResult.error) return fail(assignmentsResult.error, 'product_option_templates');
+    const assignments = (assignmentsResult.data || []).filter((row) => row.option_group_templates?.active !== false);
+    const templateIds = [...new Set(assignments.map((row) => row.template_id))];
+    const templateItemsResult = templateIds.length
+      ? await supabase.from('option_template_items').select('id, template_id, name, price_delta, active, sort_order').in('template_id', templateIds).eq('active', true).order('sort_order', { ascending: true })
+      : { data: [], error: null };
+    if (templateItemsResult.error) return fail(templateItemsResult.error, 'option_template_items');
+
+    const directNameKeys = new Set(directGroups.map((group) => `${group.product_id}:${String(group.name || '').trim().toLowerCase()}`));
+    const templateGroups = assignments
+      .filter((row) => !directNameKeys.has(`${row.product_id}:${String(row.option_group_templates?.name || '').trim().toLowerCase()}`))
+      .map((row) => ({ id: `tpl-${row.template_id}`, product_id: row.product_id, template_id: row.template_id, name: row.option_group_templates.name, required: row.option_group_templates.required, selection_type: row.option_group_templates.selection_type, min_select: row.option_group_templates.min_select, max_select: row.option_group_templates.max_select, sort_order: row.sort_order, is_active: true, is_template: true }));
+    const templateOptions = templateGroups.flatMap((group) => (templateItemsResult.data || []).filter((item) => item.template_id === group.template_id).map((item) => ({ id: `tplopt-${item.id}`, group_id: group.id, template_id: group.template_id, template_item_id: item.id, name: item.name, price_delta: item.price_delta, is_active: item.active, sort_order: item.sort_order })));
+    return json(200, { groups: [...directGroups, ...templateGroups], options: [...(optionsResult.data || []), ...templateOptions] });
   } catch (error) {
     return fail(error, 'configuración de Supabase');
   }
