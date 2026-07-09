@@ -34,10 +34,31 @@ function normalizeIngredient(ingredient, index = 0) {
   };
 }
 
+
+function normalizeOptionName(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('es-MX');
+}
+
+function optionDedupKey(option) {
+  return `${normalizeOptionName(option?.name)}|${Number(option?.priceDelta ?? option?.price_delta ?? 0).toFixed(2)}`;
+}
+
+function dedupeOptions(options = []) {
+  const seen = new Set();
+  return (Array.isArray(options) ? options : []).filter((option) => {
+    const key = optionDedupKey(option);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function normalizeProductOption(option, index = 0) {
   return {
     id: option.id,
     groupId: option.group_id || option.groupId,
+    templateId: option.template_id || option.templateId || null,
+    templateItemId: option.template_item_id || option.templateItemId || null,
     name: String(option.name || '').trim(),
     priceDelta: Number(option.price_delta ?? option.priceDelta ?? 0),
     isActive: option.is_active !== false,
@@ -52,6 +73,8 @@ function normalizeOptionGroup(group, index = 0) {
   return {
     id: group.id,
     productId: group.product_id || group.productId,
+    templateId: group.template_id || group.templateId || null,
+    isTemplate: group.is_template === true || group.isTemplate === true,
     name: String(group.name || '').trim(),
     required,
     selectionType,
@@ -59,8 +82,27 @@ function normalizeOptionGroup(group, index = 0) {
     maxSelect: selectionType === 'single' ? 1 : Math.max(1, minSelect, Number(group.max_select ?? group.maxSelect ?? 1) || 1),
     isActive: group.is_active !== false,
     sortOrder: Number(group.sort_order ?? group.sortOrder ?? index),
-    options: (group.product_options || group.options || []).map(normalizeProductOption).filter((option) => option.name).sort((a, b) => a.sortOrder - b.sortOrder)
+    options: dedupeOptions((group.product_options || group.options || []).map(normalizeProductOption).filter((option) => option.name).sort((a, b) => a.sortOrder - b.sortOrder))
   };
+}
+
+
+function effectiveOptionGroupSortOrder(group) {
+  const raw = Number(group?.sortOrder ?? group?.sort_order ?? 0);
+  if (!group?.required && Boolean(group?.templateId ?? group?.template_id) && raw === 0) return 100;
+  return Number.isFinite(raw) ? raw : 0;
+}
+
+function sortOptionGroups(groups = []) {
+  return [...(Array.isArray(groups) ? groups : [])].sort((a, b) => {
+    const requiredDiff = Number(Boolean(b.required)) - Number(Boolean(a.required));
+    if (requiredDiff !== 0) return requiredDiff;
+    const orderDiff = effectiveOptionGroupSortOrder(a) - effectiveOptionGroupSortOrder(b);
+    if (orderDiff !== 0) return orderDiff;
+    const aTemplate = Boolean(a.templateId ?? a.template_id);
+    const bTemplate = Boolean(b.templateId ?? b.template_id);
+    return Number(aTemplate) - Number(bTemplate);
+  });
 }
 
 function normalizeImage(image, index = 0) {
@@ -121,7 +163,7 @@ function productFromRow(row, category, index = 0) {
     sortOrder: Number(row.sort_order ?? index),
     options: Array.isArray(row.options) ? row.options : [],
     optionGroupsLoaded: row.option_groups_loaded !== false,
-    optionGroups: (row.product_option_groups || []).map(normalizeOptionGroup).filter((group) => group.name).sort((a, b) => a.sortOrder - b.sortOrder),
+    optionGroups: sortOptionGroups((row.product_option_groups || []).map(normalizeOptionGroup).filter((group) => group.name)),
     ingredients: (row.product_ingredients || [])
       .map(normalizeIngredient)
       .filter((ingredient) => ingredient.name)
