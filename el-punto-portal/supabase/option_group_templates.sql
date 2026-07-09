@@ -32,6 +32,7 @@ create table if not exists public.product_option_templates (
 );
 create index if not exists option_group_templates_active_idx on public.option_group_templates(active, name);
 create index if not exists option_template_items_template_idx on public.option_template_items(template_id, active, sort_order);
+create unique index if not exists option_template_items_unique_normalized on public.option_template_items (template_id, lower(regexp_replace(trim(name), '\s+', ' ', 'g')), price_delta);
 create index if not exists product_option_templates_product_idx on public.product_option_templates(product_id, active, sort_order);
 create index if not exists product_option_templates_template_idx on public.product_option_templates(template_id);
 create or replace function public.set_option_group_templates_updated_at() returns trigger language plpgsql as $$ begin new.updated_at = now(); return new; end; $$;

@@ -1,3 +1,4 @@
+import { dedupeOptions } from './_shared/optionDedup.js';
 import { isAuthError, requireAdmin } from './_shared/requireAdmin.js';
 import { getParam, invalidUuidResponse, UUID_RE } from './_shared/params.js';
 import { getSupabaseAdmin, json, parseBody, supabaseErrorDetails } from './_supabaseAdmin.js';
@@ -37,8 +38,8 @@ async function assigned(supabase, productId) {
     isActive: assignment.active !== false && assignment.option_group_templates?.active !== false,
     isTemplate: true,
     sortOrder: assignment.sort_order,
-    options: (itemsResult.data || [])
-      .filter((item) => item.template_id === assignment.template_id)
+    options: dedupeOptions((itemsResult.data || [])
+      .filter((item) => item.template_id === assignment.template_id))
       .map((item) => ({
         id: `tplopt-${item.id}`,
         templateItemId: item.id,
@@ -104,7 +105,7 @@ export async function handler(event) {
         .single();
       if (groupResult.error) throw groupResult.error;
 
-      const optionRows = (itemsResult.data || []).map((item) => ({
+      const optionRows = dedupeOptions(itemsResult.data || []).map((item) => ({
         group_id: groupResult.data.id,
         name: item.name,
         price_delta: item.price_delta,

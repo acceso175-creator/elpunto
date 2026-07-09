@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BUSINESS_PHONE_DISPLAY, BUSINESS_WHATSAPP, BUSINESS_WHATSAPP_URL } from './businessConfig.js';
+import { BUSINESS_PHONE_DISPLAY, BUSINESS_PHONE_TEL, BUSINESS_WHATSAPP, BUSINESS_WHATSAPP_URL } from './businessConfig.js';
 import { businessDefaults, initialMenu } from './menuData.js';
 import { isSupabaseConfigured, listProductImages, supabase } from './lib/supabaseClient.js';
 import { getMenuData, normalizeMenuData } from './services/menuService.js';
@@ -270,11 +270,16 @@ function productOptions(product) {
 }
 
 function activeOptionGroups(product) {
-  return (Array.isArray(product?.optionGroups) ? product.optionGroups : [])
+  const groups = (Array.isArray(product?.optionGroups) ? product.optionGroups : [])
     .filter((group) => group.isActive !== false)
-    .map((group) => ({ ...group, options: (group.options || []).filter((option) => option.isActive !== false) }))
-    .filter((group) => group.options.length > 0)
-    .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
+    .map((group) => ({ ...group, options: dedupeOptionList((group.options || []).filter((option) => option.isActive !== false)) }))
+    .filter((group) => group.options.length > 0);
+  const signature = (group) => [normalizeOptionName(group.name), group.selectionType || 'single', group.options.map(optionDedupKey).sort().join(',')].join('|');
+  const bySignature = new Map();
+  [...groups.filter((group) => group.isTemplate), ...groups.filter((group) => !group.isTemplate)].forEach((group) => {
+    if (!bySignature.has(signature(group))) bySignature.set(signature(group), group);
+  });
+  return [...bySignature.values()].sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
 }
 
 function optionGroupInstruction(group) {
@@ -453,6 +458,35 @@ function createStableUuid() {
 
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
+
+function normalizeOptionName(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('es-MX');
+}
+
+function optionDedupKey(option) {
+  return `${normalizeOptionName(option?.name)}|${Number(option?.priceDelta ?? option?.price_delta ?? 0).toFixed(2)}`;
+}
+
+function duplicateOptionName(options = []) {
+  const seen = new Set();
+  for (const option of Array.isArray(options) ? options : []) {
+    const key = optionDedupKey(option);
+    if (seen.has(key)) return String(option?.name || '').trim();
+    seen.add(key);
+  }
+  return '';
+}
+
+function dedupeOptionList(options = []) {
+  const seen = new Set();
+  return (Array.isArray(options) ? options : []).filter((option) => {
+    const key = optionDedupKey(option);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function isSupabaseBackedProduct(item) {
@@ -917,10 +951,10 @@ function ProductCard({ item, categoryId, addToCart, images }) {
       if (group.required && count < Math.max(1, group.minSelect)) { setOptionError(requiredOptionError(group)); return; }
       if (count > group.maxSelect) return;
     }
-    const structuredOptions = optionGroups.flatMap((group) => (selectedOptionIds[group.id] || []).map((id) => {
+    const structuredOptions = dedupeOptionList(optionGroups.flatMap((group) => (selectedOptionIds[group.id] || []).map((id) => {
       const option = group.options.find((candidate) => candidate.id === id);
       return option && { groupId: group.id, groupName: group.name, optionId: option.id, name: option.name, priceDelta: Number(option.priceDelta) || 0, templateId: group.templateId || option.templateId || null };
-    }).filter(Boolean));
+    }).filter(Boolean)));
     addToCart({
       id: item.id,
       supabaseProductId: item.supabaseProductId || (isUuid(item.id) ? item.id : undefined),
@@ -1566,7 +1600,7 @@ function ManualOrderCapture({ menu, onBack, onSaved }) {
     setSelected({ ...selected, [key]: group.selectionType === 'multiple' ? (current.some((item) => item.id === option.id) ? current.filter((item) => item.id !== option.id) : current.length < group.maxSelect ? [...current, option] : current) : [option] });
   }
   function add(product) {
-    const groups = activeOptionGroups(product); const options = groups.flatMap((group) => (selected[`${product.id}:${group.id || group.name}`] || []).map((option) => ({ groupName: group.name, name: option.name, priceDelta: option.priceDelta || 0, templateId: group.templateId || option.templateId || null })));
+    const groups = activeOptionGroups(product); const options = dedupeOptionList(groups.flatMap((group) => (selected[`${product.id}:${group.id || group.name}`] || []).map((option) => ({ groupName: group.name, name: option.name, priceDelta: option.priceDelta || 0, templateId: group.templateId || option.templateId || null }))));
     const incomplete = groups.find((group) => group.required && (selected[`${product.id}:${group.id || group.name}`] || []).length < Math.max(1, group.minSelect || 1));
     if (incomplete) return setStatus(requiredOptionError(incomplete));
     const unitPrice = (getEffectivePrice(product) || 0) + selectedOptionExtra(options);
@@ -2555,12 +2589,16 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
 function OptionTemplatesLibrary({ templates, status, onReload, onSave, onDelete }) {
   const blank = () => ({ id: '', name: '', selectionType: 'single', minSelect: 0, maxSelect: 1, required: false, active: true, items: [] });
   const [draft, setDraft] = useState(blank());
-  const edit = (template) => setDraft({ ...template, items: template.items || [] });
+  const duplicateName = duplicateOptionName(draft.items || []);
+  const edit = (template) => setDraft({ ...template, items: dedupeOptionList(template.items || []) });
   const patchItem = (index, patch) => setDraft((current) => ({ ...current, items: current.items.map((item, i) => i === index ? { ...item, ...patch } : item) }));
-  const addItem = () => setDraft((current) => ({ ...current, items: [...(current.items || []), { id: `new-${Date.now()}`, name: '', priceDelta: 0, sortOrder: current.items?.length || 0, active: true }] }));
+  const addItem = () => setDraft((current) => {
+    if (duplicateOptionName(current.items || [])) return current;
+    return { ...current, items: [...(current.items || []), { id: `new-${Date.now()}`, name: '', priceDelta: 0, sortOrder: current.items?.length || 0, active: true }] };
+  });
   const removeItem = (index) => setDraft((current) => ({ ...current, items: current.items.filter((_, i) => i !== index) }));
   return <div className="panel admin-full"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Plantillas de opciones</h2></div><div className="admin-actions"><button type="button" className="button--ghost" onClick={onReload}>Recargar</button><button type="button" onClick={() => setDraft(blank())}>Nueva plantilla</button></div></div>
-    <p className="small-note">{status || 'Crea grupos globales reutilizables y asígnalos a productos sin recapturar opciones.'}</p>
+    <p className="small-note">{status || 'Crea grupos globales reutilizables y asígnalos a productos sin recapturar opciones.'}</p>{duplicateName && <p className="option-error" role="alert">Esta plantilla contiene opciones duplicadas: {duplicateName}.</p>}
     <div className="option-group-editor"><div className="option-group-editor__grid">
       <label>Nombre<input value={draft.name || ''} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Proteína" /></label>
       <label>Tipo<select value={draft.selectionType || 'single'} onChange={(e) => setDraft({ ...draft, selectionType: e.target.value, maxSelect: e.target.value === 'single' ? 1 : Math.max(1, draft.maxSelect || 1) })}><option value="single">Selección única</option><option value="multiple">Selección múltiple</option></select></label>
@@ -2569,7 +2607,7 @@ function OptionTemplatesLibrary({ templates, status, onReload, onSave, onDelete 
       <label className="checkbox-line"><input type="checkbox" checked={draft.required === true} onChange={(e) => setDraft({ ...draft, required: e.target.checked, minSelect: e.target.checked ? Math.max(1, draft.minSelect || 0) : draft.minSelect || 0 })} />Obligatorio</label>
       <label className="checkbox-line"><input type="checkbox" checked={draft.active !== false} onChange={(e) => setDraft({ ...draft, active: e.target.checked })} />Activo</label>
     </div>{(draft.items || []).map((item, index) => <div className="option-editor" key={item.id || index}><label>Opción<input value={item.name || ''} onChange={(e) => patchItem(index, { name: e.target.value })} /></label><label>Precio extra<input type="number" step="0.01" min="0" value={item.priceDelta ?? 0} onChange={(e) => patchItem(index, { priceDelta: Math.max(0, Number(e.target.value) || 0) })} /></label><label>Orden<input type="number" value={item.sortOrder ?? index} onChange={(e) => patchItem(index, { sortOrder: Number(e.target.value) || 0 })} /></label><label className="checkbox-line"><input type="checkbox" checked={item.active !== false} onChange={(e) => patchItem(index, { active: e.target.checked })} />Activa</label><button type="button" className="button--danger" onClick={() => removeItem(index)}>Eliminar</button></div>)}
-    <div className="admin-actions"><button type="button" className="button--ghost" onClick={addItem}>Agregar opción</button><button type="button" onClick={() => onSave(draft, draft.id ? 'PATCH' : 'POST')}>{draft.id ? 'Guardar plantilla' : 'Crear plantilla'}</button></div></div>
+    <div className="admin-actions"><button type="button" className="button--ghost" onClick={addItem}>Agregar opción</button><button type="button" disabled={Boolean(duplicateName)} onClick={() => onSave({ ...draft, items: dedupeOptionList(draft.items || []) }, draft.id ? 'PATCH' : 'POST')}>{draft.id ? 'Guardar plantilla' : 'Crear plantilla'}</button></div></div>
     <div className="category-admin-list">{templates.map((template) => <div className="category-admin-row" key={template.id}><div><strong>{template.name}</strong><p className="small-note">Tipo: {template.selectionType === 'multiple' ? 'Selección múltiple' : 'Selección única'} · Usada en {template.usageCount || 0} productos</p><p className="small-note">Opciones: {(template.items || []).map((item) => `${item.name}${item.priceDelta ? ` +${formatMoney(item.priceDelta)}` : ''}`).join(', ') || 'Sin opciones'}</p></div><div className="admin-actions"><button type="button" className="button--ghost" onClick={() => edit(template)}>Editar</button><button type="button" className="button--ghost" onClick={() => setDraft({ ...template, id: '', name: `${template.name} copia`, items: (template.items || []).map((item) => ({ ...item, id: undefined })) })}>Duplicar</button><button type="button" className="button--danger" onClick={() => onDelete(template)}>Eliminar</button></div></div>)}</div>
   </div>;
 }
@@ -3045,7 +3083,7 @@ function Footer({ business }) {
       <strong>{business.name}</strong>
       <span>{business.subtitle}</span>
       <span>{BUSINESS_ADDRESS_FOOTER}</span>
-      <a href={`${BUSINESS_WHATSAPP_URL}?text=${encodeURIComponent(WHATSAPP_GREETING)}`}>Tel. {BUSINESS_PHONE_DISPLAY}</a>
+      <a href={BUSINESS_PHONE_TEL}>Tel. {BUSINESS_PHONE_DISPLAY}</a><a href={`${BUSINESS_WHATSAPP_URL}?text=${encodeURIComponent(WHATSAPP_GREETING)}`}>WhatsApp</a>
       <SocialLinks business={business} className="footer-social-links" />
     </footer>
   );

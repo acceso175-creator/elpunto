@@ -1,3 +1,4 @@
+import { dedupeOptions, normalizeOptionName, optionDedupKey } from './_shared/optionDedup.js';
 import { getSupabaseAdmin, json, supabaseErrorDetails } from './_supabaseAdmin.js';
 
 function fail(error, table) {
@@ -47,12 +48,18 @@ export async function handler(event) {
       : { data: [], error: null };
     if (templateItemsResult.error) return fail(templateItemsResult.error, 'option_template_items');
 
-    const directNameKeys = new Set(directGroups.map((group) => `${group.product_id}:${String(group.name || '').trim().toLowerCase()}`));
     const templateGroups = assignments
-      .filter((row) => !directNameKeys.has(`${row.product_id}:${String(row.option_group_templates?.name || '').trim().toLowerCase()}`))
       .map((row) => ({ id: `tpl-${row.template_id}`, product_id: row.product_id, template_id: row.template_id, name: row.option_group_templates.name, required: row.option_group_templates.required, selection_type: row.option_group_templates.selection_type, min_select: row.option_group_templates.min_select, max_select: row.option_group_templates.max_select, sort_order: row.sort_order, is_active: true, is_template: true }));
-    const templateOptions = templateGroups.flatMap((group) => (templateItemsResult.data || []).filter((item) => item.template_id === group.template_id).map((item) => ({ id: `tplopt-${item.id}`, group_id: group.id, template_id: group.template_id, template_item_id: item.id, name: item.name, price_delta: item.price_delta, is_active: item.active, sort_order: item.sort_order })));
-    return json(200, { groups: [...directGroups, ...templateGroups], options: [...(optionsResult.data || []), ...templateOptions] });
+    const templateOptions = templateGroups.flatMap((group) => dedupeOptions((templateItemsResult.data || []).filter((item) => item.template_id === group.template_id)).map((item) => ({ id: `tplopt-${item.id}`, group_id: group.id, template_id: group.template_id, template_item_id: item.id, name: item.name, price_delta: item.price_delta, is_active: item.active, sort_order: item.sort_order })));
+    const allOptions = [...(optionsResult.data || []), ...templateOptions];
+    const optionsByGroup = allOptions.reduce((map, option) => map.set(option.group_id, [...(map.get(option.group_id) || []), option]), new Map());
+    const groupSignature = (group) => [group.product_id, normalizeOptionName(group.name), group.selection_type, dedupeOptions(optionsByGroup.get(group.id) || []).map(optionDedupKey).sort().join(',')].join('|');
+    const bySignature = new Map();
+    [...templateGroups, ...directGroups].forEach((group) => { if (!bySignature.has(groupSignature(group))) bySignature.set(groupSignature(group), group); });
+    const groups = [...bySignature.values()].sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
+    const groupIdsToReturn = new Set(groups.map((group) => group.id));
+    const options = groups.flatMap((group) => dedupeOptions(optionsByGroup.get(group.id) || [])).filter((option) => groupIdsToReturn.has(option.group_id));
+    return json(200, { groups, options });
   } catch (error) {
     return fail(error, 'configuración de Supabase');
   }

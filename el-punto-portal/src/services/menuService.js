@@ -34,6 +34,25 @@ function normalizeIngredient(ingredient, index = 0) {
   };
 }
 
+
+function normalizeOptionName(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('es-MX');
+}
+
+function optionDedupKey(option) {
+  return `${normalizeOptionName(option?.name)}|${Number(option?.priceDelta ?? option?.price_delta ?? 0).toFixed(2)}`;
+}
+
+function dedupeOptions(options = []) {
+  const seen = new Set();
+  return (Array.isArray(options) ? options : []).filter((option) => {
+    const key = optionDedupKey(option);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function normalizeProductOption(option, index = 0) {
   return {
     id: option.id,
@@ -63,7 +82,7 @@ function normalizeOptionGroup(group, index = 0) {
     maxSelect: selectionType === 'single' ? 1 : Math.max(1, minSelect, Number(group.max_select ?? group.maxSelect ?? 1) || 1),
     isActive: group.is_active !== false,
     sortOrder: Number(group.sort_order ?? group.sortOrder ?? index),
-    options: (group.product_options || group.options || []).map(normalizeProductOption).filter((option) => option.name).sort((a, b) => a.sortOrder - b.sortOrder)
+    options: dedupeOptions((group.product_options || group.options || []).map(normalizeProductOption).filter((option) => option.name).sort((a, b) => a.sortOrder - b.sortOrder))
   };
 }
 
