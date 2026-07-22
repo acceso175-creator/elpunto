@@ -13,6 +13,13 @@ const normalizeItems = (items = []) => items.map((item) => {
   return { product_id: isUuid(item.productId || item.product_id) ? (item.productId || item.product_id) : null, product_name: productName, quantity, unit_price: unitPrice, total_price: money(quantity * unitPrice), selected_options: item.selectedOptions ?? item.selected_options ?? null, item_notes: item.itemNotes ?? item.item_notes ?? null };
 });
 const orderSnapshot = (order) => order ? { ...order, admin_order_items: order.admin_order_items || [] } : null;
+async function getActiveCapturer(supabase, admin) {
+  const { data: profile, error } = await supabase.from('admin_profiles').select('display_name, active').eq('user_id', admin.userId).maybeSingle();
+  if (error) throw new Error('No se pudo validar el perfil del capturista.');
+  if (profile && profile.active !== true) { const err = new Error('Este usuario no tiene permiso para capturar pedidos.'); err.statusCode = 403; throw err; }
+  if (!profile?.display_name) console.warn(`[admin_profiles] Falta configurar perfil para ${admin.userId}. Se usará el correo temporalmente.`);
+  return { userId: admin.userId, name: profile?.display_name || admin.email || 'Sin identificar' };
+}
 async function fetchOrder(supabase, id) {
   const { data, error } = await supabase.from('admin_orders').select('*, admin_order_items(*)').eq('id', id).single();
   if (error) throw error;
@@ -76,11 +83,11 @@ export async function handler(event) {
     if (event.httpMethod !== 'POST') return json(405, { error: 'Método no permitido.' });
     const cleanItems = normalizeItems(Array.isArray(body.items) ? body.items : []); if (!cleanItems.length) return json(400, { error: 'No se puede guardar un pedido vacío.' });
     if (!TYPES.includes(body.orderType) || !PAYMENTS.includes(body.paymentMethod) || !STATUSES.includes(body.status)) return json(400, { error: 'Tipo, pago o estado inválido.' });
-    if (!String(body.capturedBy || '').trim()) return json(400, { error: 'capturado_por es obligatorio.' });
+    const capturer = await getActiveCapturer(supabase, admin);
     const subtotal = money(cleanItems.reduce((sum, item) => sum + item.total_price, 0)); const discount = money(body.discountTotal); const status = body.paymentMethod === 'plataformas' ? 'pendiente' : body.status;
-    const orderPayload = { customer_name: body.customerName || null, customer_phone: body.customerPhone || null, order_type: body.orderType, payment_method: body.paymentMethod, status, paid_at: status === 'pagado' ? new Date().toISOString() : null, subtotal, discount_total: discount, total: Math.max(0, money(subtotal - discount)), notes: body.notes || null, captured_by: String(body.capturedBy).trim(), updated_by: body.capturedBy || 'admin' };
+    const orderPayload = { customer_name: body.customerName || null, customer_phone: body.customerPhone || null, order_type: body.orderType, payment_method: body.paymentMethod, status, paid_at: status === 'pagado' ? new Date().toISOString() : null, subtotal, discount_total: discount, total: Math.max(0, money(subtotal - discount)), notes: body.notes || null, captured_by: capturer.name, captured_by_user_id: capturer.userId, captured_by_name: capturer.name, updated_by: capturer.name };
     const { data: order, error } = await supabase.from('admin_orders').insert(orderPayload).select().single(); if (error) throw error;
     const { error: itemsError } = await supabase.from('admin_order_items').insert(cleanItems.map((item) => ({ ...item, order_id: order.id }))); if (itemsError) { await supabase.from('admin_orders').delete().eq('id', order.id); throw itemsError; }
     return json(201, { order });
-  } catch (error) { return json(500, { error: error.message || 'Error inesperado en pedidos manuales.' }); }
+  } catch (error) { return json(error.statusCode || 500, { error: error.message || 'Error inesperado en pedidos manuales.' }); }
 }
