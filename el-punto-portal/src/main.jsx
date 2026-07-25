@@ -86,12 +86,6 @@ function mapBusinessSettings(row) {
 }
 
 
-async function adminAuthHeaders() {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) throw new Error('La sesión administrativa expiró');
-  return { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` };
-}
-
 async function adminRequest(functionName, { method = 'POST', body = {} } = {}) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error('La sesión administrativa expiró');
@@ -106,7 +100,7 @@ async function adminRequest(functionName, { method = 'POST', body = {} } = {}) {
   const response = await fetch(endpoint, {
     method,
     cache: 'no-store',
-    headers: await adminAuthHeaders(),
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
     body: method === 'GET' ? undefined : JSON.stringify(body)
   });
   const result = await response.json().catch(() => ({}));
@@ -1646,33 +1640,12 @@ function AccountSection({ profile, setProfile }) {
   );
 }
 
-function ManualOrderCapture({ menu, onBack, onSaved }) {
+function ManualOrderCapture({ menu, onBack, onSaved, adminSession, adminProfile }) {
   const [search, setSearch] = useState(''); const [cart, setCart] = useState([]); const [selected, setSelected] = useState({});
   const [form, setForm] = useState({ customerName: '', customerPhone: '', orderType: 'mostrador', paymentMethod: 'efectivo', status: 'pagado', notes: '' });
-  const [status, setStatus] = useState(''); const [lastOrder, setLastOrder] = useState(null);
-  const [capturer, setCapturer] = useState({ loading: true, userId: '', name: '', active: false, error: '' });
+  const [status, setStatus] = useState(''); const [lastOrder, setLastOrder] = useState(null); const [isSaving, setIsSaving] = useState(false);
   const categories = menu.map((category) => ({ ...category, items: category.items.filter((item) => item.available !== false && item.name.toLowerCase().includes(search.toLowerCase())) })).filter((category) => category.items.length);
   const total = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
-  useEffect(() => {
-    let mounted = true;
-    async function loadCapturer() {
-      setCapturer({ loading: true, userId: '', name: '', active: false, error: '' });
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!mounted) return;
-      if (!session?.user?.id) { setCapturer({ loading: false, userId: '', name: '', active: false, error: 'Tu sesión no es válida. Inicia sesión nuevamente.' }); return; }
-      const fallbackName = session.user.email || 'Sin identificar';
-      const { data, error } = await supabase.from('admin_profiles').select('display_name, active').eq('user_id', session.user.id).maybeSingle();
-      if (!mounted) return;
-      if (error) console.warn('[admin_profiles] No se pudo consultar el perfil del capturista:', error.message || error);
-      if (!data?.display_name) console.warn(`[admin_profiles] Falta configurar perfil para ${session.user.id}. Se mostrará el correo temporalmente.`);
-      const name = data?.display_name || fallbackName;
-      const active = data ? data.active === true : true;
-      setCapturer({ loading: false, userId: session.user.id, name, active, error: active ? '' : 'Este usuario no tiene permiso para capturar pedidos.' });
-    }
-    loadCapturer();
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(() => loadCapturer());
-    return () => { mounted = false; subscription?.unsubscribe(); };
-  }, []);
   function toggleOption(product, group, option) {
     const key = `${product.id}:${group.id || group.name}`; const current = selected[key] || [];
     setSelected({ ...selected, [key]: group.selectionType === 'multiple' ? (current.some((item) => item.id === option.id) ? current.filter((item) => item.id !== option.id) : current.length < group.maxSelect ? [...current, option] : current) : [option] });
@@ -1686,15 +1659,14 @@ function ManualOrderCapture({ menu, onBack, onSaved }) {
   }
   async function save() {
     if (!cart.length) return setStatus('No se puede guardar un pedido vacío.');
-    if (capturer.loading) return setStatus('Cargando usuario...');
-    if (!capturer.userId) return setStatus('Tu sesión no es válida. Inicia sesión nuevamente.');
-    if (!capturer.active) return setStatus('Este usuario no tiene permiso para capturar pedidos.');
-    try { setStatus('Guardando pedido...'); const result = await adminRequest('admin-manual-orders', { body: { ...form, items: cart } }); setLastOrder(result.order); setCart([]); setStatus(`Pedido ${result.order.order_number} guardado correctamente.`); onSaved(); } catch (error) { setStatus(error.message); }
+    if (!adminSession?.access_token) return setStatus('Tu sesión no es válida. Inicia sesión nuevamente.');
+    if (isSaving) return;
+    try { setIsSaving(true); setStatus('Guardando pedido...'); const result = await adminRequest('admin-manual-orders', { body: { ...form, items: cart } }); setLastOrder(result.order); setCart([]); setStatus(`Pedido ${result.order.order_number} guardado correctamente.`); onSaved(); } catch (error) { setStatus(error.message); } finally { setIsSaving(false); }
   }
   return <section className="section admin-order-screen"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Capturar pedido</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button className="button--ghost" onClick={() => { setCart([]); setLastOrder(null); }}>Nuevo pedido</button>{lastOrder && <button className="button--ghost" onClick={() => alert(`${lastOrder.order_number} · ${formatMoney(lastOrder.total)}`)}>Ver último pedido</button>}</div></div>
     <div className="admin-order-layout"><div className="admin-menu-picker"><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar producto por nombre…" />{categories.map((category) => <div key={category.id}><h3>{category.name}</h3><div className="admin-product-pick-grid">{category.items.map((product) => <article className="admin-product-pick" key={product.id}><strong>{product.name}</strong><span>{hasValidDiscount(product) && <del>{formatMoney(product.price)} </del>}{formatMoney(getEffectivePrice(product))}</span><p>{product.description}</p>{activeOptionGroups(product).map((group) => <fieldset key={group.id || group.name}><legend>{group.name}{group.required ? ' *' : ''}</legend>{group.options.map((option) => <button type="button" className={(selected[`${product.id}:${group.id || group.name}`] || []).some((item) => item.id === option.id) ? 'option-chip option-chip--selected' : 'option-chip'} onClick={() => toggleOption(product, group, option)} key={option.id}>{option.name}{option.priceDelta ? ` +${formatMoney(option.priceDelta)}` : ''}</button>)}</fieldset>)}<button type="button" onClick={() => add(product)}>Agregar</button></article>)}</div></div>)}</div>
       <aside className="admin-order-cart panel"><h3>Carrito</h3>{cart.length === 0 && <p className="small-note">Agrega productos para comenzar.</p>}{cart.map((item) => <div className="admin-cart-line" key={item.key}><strong>{item.productName}</strong><small>{selectedOptionsText(item.selectedOptions)}</small><div><button className="button--ghost" onClick={() => setCart(cart.map((row) => row.key === item.key ? { ...row, quantity: Math.max(1, row.quantity - 1) } : row))}>−</button><b>{item.quantity}</b><button className="button--ghost" onClick={() => setCart(cart.map((row) => row.key === item.key ? { ...row, quantity: row.quantity + 1 } : row))}>+</button><button className="button--ghost" onClick={() => setCart(cart.filter((row) => row.key !== item.key))}>Quitar</button></div><input placeholder="Notas: sin cebolla…" value={item.itemNotes} onChange={(e) => setCart(cart.map((row) => row.key === item.key ? { ...row, itemNotes: e.target.value } : row))} /><span>{formatMoney(item.unitPrice * item.quantity)}</span></div>)}<h3>Total: {formatMoney(total)}</h3>
-      <div className="form-grid one"><input placeholder="Nombre del cliente (opcional)" value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /><input type="tel" inputMode="tel" autoComplete="tel" placeholder="Teléfono (opcional)" value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} /><select value={form.orderType} onChange={(e) => setForm({ ...form, orderType: e.target.value })}>{['mostrador','domicilio','recoger'].map((v) => <option key={v}>{v}</option>)}</select><select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, status: e.target.value === 'plataformas' ? 'pendiente' : form.status })}>{ADMIN_PAYMENT_METHODS.map((v) => <option value={v.value} key={v.value}>{v.label}</option>)}</select><select value={form.status} disabled={form.paymentMethod === 'plataformas'} onChange={(e) => setForm({ ...form, status: e.target.value })}>{['pendiente','pagado','cancelado'].map((v) => <option key={v}>{v}</option>)}</select><label className="readonly-field"><span>Capturado por</span><output>{capturer.loading ? 'Cargando usuario...' : capturer.name || 'Sin identificar'}</output></label>{capturer.error && <p className="small-note">{capturer.error}</p>}<textarea placeholder="Notas generales" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /><button onClick={save} disabled={capturer.loading || !capturer.userId || !capturer.active}>Guardar pedido</button><p className="small-note">{status}</p></div></aside></div></section>;
+      <div className="form-grid one"><input placeholder="Nombre del cliente (opcional)" value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /><input type="tel" inputMode="tel" autoComplete="tel" placeholder="Teléfono (opcional)" value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} /><select value={form.orderType} onChange={(e) => setForm({ ...form, orderType: e.target.value })}>{['mostrador','domicilio','recoger'].map((v) => <option key={v}>{v}</option>)}</select><select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, status: e.target.value === 'plataformas' ? 'pendiente' : form.status })}>{ADMIN_PAYMENT_METHODS.map((v) => <option value={v.value} key={v.value}>{v.label}</option>)}</select><select value={form.status} disabled={form.paymentMethod === 'plataformas'} onChange={(e) => setForm({ ...form, status: e.target.value })}>{['pendiente','pagado','cancelado'].map((v) => <option key={v}>{v}</option>)}</select><div className="captured-by-card"><span>Capturado por</span><strong>{adminProfile?.display_name}</strong></div><textarea placeholder="Notas generales" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /><button onClick={save} disabled={!adminSession || !cart.length || isSaving}>{isSaving ? 'Guardando pedido...' : 'Guardar pedido'}</button><p className="small-note">{status}</p></div></aside></div></section>;
 }
 
 function AdminCuts({ onBack }) {
@@ -2013,6 +1985,10 @@ function HistoryTable({ title, headers, rows }) {
 
 function AdminSection({ menu, setMenu, business, setBusiness, productImages, refreshProductImages, productImagesError, dataSource, setDataSource }) {
   const [adminSession, setAdminSession] = useState(null);
+  const [adminProfile, setAdminProfile] = useState(null);
+  const adminProfileRef = useRef(null);
+  const loadedProfileUserIdRef = useRef(null);
+  const profileRequestRef = useRef(null);
   const [authStatus, setAuthStatus] = useState('Verificando sesión...');
   const [authLoading, setAuthLoading] = useState(true);
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
@@ -2038,15 +2014,24 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     let mounted = true;
     async function initSession() {
       if (!isSupabaseConfigured) { setAuthStatus('Configura Supabase para usar el panel administrativo.'); setAuthLoading(false); return; }
-      setAuthLoading(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      if (mounted) await verifyAdminSession(session);
-      if (mounted) setAuthLoading(false);
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        if (mounted) await verifyAdminSession(session);
+      } catch (error) {
+        console.error('Error inicializando sesión:', error);
+        if (mounted) setAuthStatus('No se pudo verificar la sesión administrativa.');
+      } finally {
+        if (mounted) setAuthLoading(false);
+      }
     }
     initSession();
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
-      if (!session) { setAdminSession(null); setAuthLoading(false); }
+      setAdminSession(session);
+      if (event === 'SIGNED_OUT') clearAdminProfile();
+      if (event === 'SIGNED_IN' && session?.user) verifyAdminSession(session);
+      // TOKEN_REFRESHED only updates the session above; the profile remains stable.
     });
     return () => { mounted = false; subscription?.unsubscribe(); };
   }, []);
@@ -2057,13 +2042,39 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     return () => window.removeEventListener('elpunto:metrics', refresh);
   }, []);
 
+  function clearAdminProfile() {
+    loadedProfileUserIdRef.current = null;
+    profileRequestRef.current = null;
+    adminProfileRef.current = null;
+    setAdminProfile(null);
+  }
+
+  async function loadAdminProfileOnce(userId) {
+    if (loadedProfileUserIdRef.current === userId) return adminProfileRef.current;
+    if (profileRequestRef.current?.userId === userId) return profileRequestRef.current.promise;
+    const promise = supabase.from('admin_users').select('user_id, email, display_name, role, active').eq('user_id', userId).maybeSingle()
+      .then(({ data, error }) => {
+        if (error) throw error;
+        if (!data) throw new Error('Tu usuario no tiene acceso al panel administrativo.');
+        loadedProfileUserIdRef.current = userId;
+        adminProfileRef.current = data;
+        setAdminProfile(data);
+        return data;
+      }).finally(() => { if (profileRequestRef.current?.userId === userId) profileRequestRef.current = null; });
+    profileRequestRef.current = { userId, promise };
+    return promise;
+  }
+
   async function verifyAdminSession(session, { showStatus = false } = {}) {
-    if (!session?.user?.id) { setAdminSession(null); setAuthStatus(''); return false; }
+    if (!session?.user?.id) { setAdminSession(null); clearAdminProfile(); setAuthStatus(''); return false; }
     if (showStatus) setAuthStatus('Verificando permisos...');
-    const { data, error } = await supabase.from('admin_users').select('user_id, active').eq('user_id', session.user.id).eq('active', true).maybeSingle();
-    if (error || data?.user_id !== session.user.id || data?.active !== true) {
+    try {
+      const profile = await loadAdminProfileOnce(session.user.id);
+      if (profile?.user_id !== session.user.id || profile?.active !== true) throw new Error('Usuario administrativo inactivo.');
+    } catch {
       await supabase.auth.signOut();
       setAdminSession(null);
+      clearAdminProfile();
       setAuthStatus('Tu usuario no tiene acceso al panel administrativo.');
       return false;
     }
@@ -2084,6 +2095,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
   async function logout() {
     await supabase.auth.signOut();
     setAdminSession(null);
+    clearAdminProfile();
     setAdminView('inicio');
     setAuthStatus('');
   }
@@ -2447,7 +2459,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
     );
   }
 
-  if (adminView === 'captura') return <ManualOrderCapture menu={menu} onBack={() => setAdminView('inicio')} onSaved={loadOrders} />;
+  if (adminView === 'captura') return <ManualOrderCapture menu={menu} onBack={() => setAdminView('inicio')} onSaved={loadOrders} adminSession={adminSession} adminProfile={adminProfile} />;
   if (adminView === 'cortes') return <AdminCuts onBack={() => setAdminView('inicio')} />;
   if (adminView === 'historico') return <SalesHistory onBack={() => setAdminView('inicio')} />;
 

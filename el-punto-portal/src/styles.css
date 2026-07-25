@@ -1635,7 +1635,7 @@ main { padding-top: 84px; }
   .admin-cart-line input { width: 100%; }
 }
 
-.readonly-field {
+.captured-by-card {
   display: grid;
   gap: 0.35rem;
   padding: 0.85rem 1rem;
@@ -1645,7 +1645,7 @@ main { padding-top: 84px; }
   color: var(--muted);
 }
 
-.readonly-field output {
+.captured-by-card strong {
   color: var(--text);
   font-weight: 800;
 }
