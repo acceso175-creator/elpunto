@@ -76,11 +76,11 @@ export async function handler(event) {
     if (event.httpMethod !== 'POST') return json(405, { error: 'Método no permitido.' });
     const cleanItems = normalizeItems(Array.isArray(body.items) ? body.items : []); if (!cleanItems.length) return json(400, { error: 'No se puede guardar un pedido vacío.' });
     if (!TYPES.includes(body.orderType) || !PAYMENTS.includes(body.paymentMethod) || !STATUSES.includes(body.status)) return json(400, { error: 'Tipo, pago o estado inválido.' });
-    if (!String(body.capturedBy || '').trim()) return json(400, { error: 'capturado_por es obligatorio.' });
     const subtotal = money(cleanItems.reduce((sum, item) => sum + item.total_price, 0)); const discount = money(body.discountTotal); const status = body.paymentMethod === 'plataformas' ? 'pendiente' : body.status;
-    const orderPayload = { customer_name: body.customerName || null, customer_phone: body.customerPhone || null, order_type: body.orderType, payment_method: body.paymentMethod, status, paid_at: status === 'pagado' ? new Date().toISOString() : null, subtotal, discount_total: discount, total: Math.max(0, money(subtotal - discount)), notes: body.notes || null, captured_by: String(body.capturedBy).trim(), updated_by: body.capturedBy || 'admin' };
+    const capturedByName = admin.displayName || admin.email || 'Sin identificar';
+    const orderPayload = { customer_name: body.customerName || null, customer_phone: body.customerPhone || null, order_type: body.orderType, payment_method: body.paymentMethod, status, paid_at: status === 'pagado' ? new Date().toISOString() : null, subtotal, discount_total: discount, total: Math.max(0, money(subtotal - discount)), notes: body.notes || null, captured_by: capturedByName, captured_by_user_id: admin.userId, captured_by_name: capturedByName, updated_by: capturedByName };
     const { data: order, error } = await supabase.from('admin_orders').insert(orderPayload).select().single(); if (error) throw error;
     const { error: itemsError } = await supabase.from('admin_order_items').insert(cleanItems.map((item) => ({ ...item, order_id: order.id }))); if (itemsError) { await supabase.from('admin_orders').delete().eq('id', order.id); throw itemsError; }
     return json(201, { order });
-  } catch (error) { return json(500, { error: error.message || 'Error inesperado en pedidos manuales.' }); }
+  } catch (error) { return json(error.statusCode || 500, { error: error.message || 'Error inesperado en pedidos manuales.' }); }
 }

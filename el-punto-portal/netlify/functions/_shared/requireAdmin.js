@@ -23,15 +23,15 @@ export async function requireAdmin(event) {
   const adminClient = createClient(url, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
   const { data: admin, error: adminError } = await adminClient
     .from('admin_users')
-    .select('user_id, email, active')
+    .select('user_id, email, display_name, role, active')
     .eq('user_id', user.id)
-    .eq('active', true)
     .maybeSingle();
 
-  if (adminError) return jsonError(500, 'No se pudo validar el permiso administrativo.');
-  if (!admin?.user_id || admin.active !== true) return jsonError(403, 'Tu cuenta no tiene permisos de administrador.');
+  if (adminError) return jsonError(500, 'No se pudo validar el usuario administrativo.');
+  if (!admin?.user_id) return jsonError(403, 'El usuario no está registrado como administrador.');
+  if (admin.active !== true) return jsonError(403, 'El usuario administrativo está inactivo.');
 
-  return { userId: user.id, email: admin.email || user.email || null };
+  return { userId: user.id, email: admin.email || user.email || null, displayName: admin.display_name?.trim() || admin.email || user.email || null, role: admin.role || null, active: admin.active };
 }
 
 export function isAuthError(result) {

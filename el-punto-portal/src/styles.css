@@ -1634,3 +1634,18 @@ main { padding-top: 84px; }
   .admin-cart-line div { flex-wrap: wrap; }
   .admin-cart-line input { width: 100%; }
 }
+
+.captured-by-card {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--card-cream);
+  color: var(--muted);
+}
+
+.captured-by-card strong {
+  color: var(--text);
+  font-weight: 800;
+}
