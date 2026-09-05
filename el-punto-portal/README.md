@@ -4,7 +4,7 @@ Portal React/Vite para tomar pedidos por WhatsApp, administrar menú y conectar 
 
 ## Qué incluye
 
-- Inicio, ubicación, menú con filtros, productos y carrito.
+- Menú principal con filtros, productos y carrito, además de ubicación.
 - Ingredientes removibles por producto.
 - Pedido por WhatsApp con número de orden, método de pago, notas y ubicación.
 - Panel Admin en `/admin` para editar negocio, categorías, productos, disponibilidad, ingredientes e imágenes.

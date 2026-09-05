@@ -39,7 +39,7 @@ const ADMIN_PAYMENT_METHODS = [...PAYMENT_METHODS.slice(0, 3), { value: 'platafo
 const BASE_CATEGORY_NAMES = ['Desayunos', 'Birria', 'Bebidas', 'Postres'];
 
 const PUBLIC_ROUTE_SECTIONS = {
-  '/': 'inicio',
+  '/': 'menu',
   '/menu': 'menu',
   '/club': 'cuenta'
 };
@@ -51,11 +51,12 @@ function normalizedPathname() {
 function sectionFromLocation() {
   const pathname = normalizedPathname();
   if (pathname === '/' && window.location.hash === '#pedido') return 'pedido';
-  return PUBLIC_ROUTE_SECTIONS[pathname] || 'inicio';
+  if (pathname === '/' && window.location.hash === '#ubicacion') return 'ubicacion';
+  return PUBLIC_ROUTE_SECTIONS[pathname] || 'menu';
 }
 
 function publicUrlForSection(section) {
-  if (section === 'menu') return '/menu';
+  if (section === 'menu') return '/';
   if (section === 'cuenta') return '/club';
   if (section === 'pedido') return '/#pedido';
   return '/';
@@ -586,6 +587,10 @@ function App() {
   useEffect(() => {
     if (isAdminPath || isPaymentSuccessPath || isPaymentCancelPath) return undefined;
 
+    if (normalizedPathname() === '/menu') {
+      window.history.replaceState({}, '', '/');
+    }
+
     function syncSectionWithLocation() {
       setActiveSection(sectionFromLocation());
     }
@@ -595,8 +600,8 @@ function App() {
   }, [isAdminPath, isPaymentSuccessPath, isPaymentCancelPath]);
 
   useEffect(() => {
-    if (activeSection !== 'menu' && activeSection !== 'pedido' && activeSection !== 'cuenta') return undefined;
-    const sectionIds = { menu: 'menu', pedido: 'pedido', cuenta: 'club-el-punto' };
+    if (activeSection !== 'pedido' && activeSection !== 'cuenta') return undefined;
+    const sectionIds = { pedido: 'pedido', cuenta: 'club-el-punto' };
     const frame = window.requestAnimationFrame(() => {
       document.getElementById(sectionIds[activeSection])?.scrollIntoView({ behavior: 'auto', block: 'start' });
     });
@@ -668,13 +673,12 @@ function App() {
   function navigateTo(section) {
     if (isAdminPath) return;
     const sectionIds = {
-      inicio: 'inicio',
       ubicacion: 'ubicacion',
       menu: 'menu',
       pedido: 'pedido',
       cuenta: 'club-el-punto'
     };
-    const nextSection = section === 'ubicacion' ? 'inicio' : section;
+    const nextSection = section;
     const nextUrl = section === 'ubicacion' ? '/#ubicacion' : publicUrlForSection(nextSection);
     window.history.pushState({}, '', nextUrl);
     setActiveSection(nextSection);
@@ -701,14 +705,12 @@ function App() {
   return (
     <main>
       <Header navigateTo={navigateTo} />
-      <Hero navigateTo={navigateTo} />
-      <LocationSection business={business} />
-
-      {activeSection === 'inicio' && <HomeImages />}
 
       {activeSection === 'menu' && (
         <MenuSection menu={menu} addToCart={addToCart} productImages={productImages} />
       )}
+
+      {activeSection === 'ubicacion' && <LocationSection business={business} />}
 
       {activeSection === 'pedido' && (
         <OrderSection
@@ -737,7 +739,6 @@ function App() {
 function Header({ navigateTo }) {
   const [logoError, setLogoError] = useState(false);
   const links = [
-    ['inicio', 'Inicio'],
     ['ubicacion', 'Ubicación'],
     ['menu', 'Menú'],
     ['pedido', 'Pedido'],
@@ -751,7 +752,7 @@ function Header({ navigateTo }) {
 
   return (
     <header className="site-header">
-      <button className="brand-mini" onClick={() => navigateTo('inicio')} aria-label="Ir al inicio">
+      <button className="brand-mini" onClick={() => navigateTo('menu')} aria-label="Ir al menú principal">
         <span className="brand-logo">
           {!logoError ? <img src="/images/logo-el-punto.png" alt="Logo El Punto" onError={() => setLogoError(true)} /> : <span className="brand-logo__fallback">El Punto</span>}
         </span>
@@ -765,46 +766,6 @@ function Header({ navigateTo }) {
     </header>
   );
 }
-
-function PortalImage({ src, alt }) {
-  const [error, setError] = useState(false);
-  if (error) return <div className="image-placeholder" aria-hidden="true" />;
-  return <img src={src} alt={alt} className="home-image" onError={() => setError(true)} />;
-}
-
-function HomeImages() {
-  return (
-    <section className="section home-gallery">
-      <PortalImage src={PORTAL_IMAGES.product} alt="Imagen del producto" />
-      <PortalImage src={PORTAL_IMAGES.breakfast} alt="Desayuno destacado" />
-      <PortalImage src={PORTAL_IMAGES.local} alt="Foto del local" />
-    </section>
-  );
-}
-
-function Hero({ navigateTo }) {
-  return (
-    <section id="inicio" className="hero scroll-target">
-      <div className="hero__content">
-        <p className="eyebrow">Centro de Chihuahua · para llevar</p>
-        <h1>El Punto<span>.</span></h1>
-        <p className="subtitle">Food To Go</p>
-        <p className="hero__copy">Desayunos, comida rápida y antojos listos para llevar.</p>
-        <div className="hero__actions">
-          <button onClick={() => navigateTo('menu')}>Ver menú</button>
-        </div>
-      </div>
-      <div className="hero__card">
-        <div className="pin" aria-hidden="true">⌖</div>
-        <h2>Pedido rápido</h2>
-        <p>Recoger o domicilio</p>
-        <p>Pago en efectivo, tarjeta o transferencia</p>
-        <p>WhatsApp automático con número de orden</p>
-      </div>
-    </section>
-  );
-}
-
 
 function LocationSection({ business }) {
   return (
@@ -1594,7 +1555,7 @@ function PaymentResultPage({ type, business }) {
           {orderNumber && <p className="success">Orden: {orderNumber}</p>}
           <div className="payment-result__actions">
             {isSuccess && <button onClick={sendPaymentWhatsApp}>Enviar detalles por WhatsApp</button>}
-            <a className="button--ghost" href={isSuccess ? '/' : '/#pedido'}>{isSuccess ? 'Volver al inicio' : 'Volver al pedido'}</a>
+            <a className="button--ghost" href={isSuccess ? '/' : '/#pedido'}>{isSuccess ? 'Volver al menú' : 'Volver al pedido'}</a>
           </div>
         </div>
       </section>
@@ -2455,6 +2416,18 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
           <button type="submit" disabled={authLoading || authStatus === 'Iniciando sesión...' || authStatus === 'Verificando permisos...'}>{authStatus === 'Iniciando sesión...' ? 'Iniciando sesión...' : authStatus === 'Verificando permisos...' ? 'Verificando permisos...' : 'Entrar'}</button>
           {authStatus && <p className="small-note">{authStatus}</p>}
         </form>
+        <div className="panel narrow admin-update-summary">
+          <strong>Actualizaciones</strong>
+          <p>Se eliminó la página de inicio anterior. El menú “Arma tu pedido” ahora es la página principal del sitio.</p>
+        </div>
+        <div className="panel narrow admin-update-summary">
+          <strong>Resumen de actualización (Codex)</strong>
+          <ul>
+            <li>La raíz <code>/</code> abre directamente el menú.</li>
+            <li>La ruta anterior <code>/menu</code> redirige a la página principal.</li>
+            <li>El logo y la navegación pública regresan al menú principal.</li>
+          </ul>
+        </div>
       </section>
     );
   }
