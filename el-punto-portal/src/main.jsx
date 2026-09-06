@@ -2419,6 +2419,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         <div className="panel narrow admin-update-summary">
           <strong>Actualizaciones</strong>
           <p>Se eliminó la página de inicio anterior. El menú “Arma tu pedido” ahora es la página principal del sitio.</p>
+          <p>Se corrigió la carga y eliminación de imágenes de productos en el Admin.</p>
         </div>
         <div className="panel narrow admin-update-summary">
           <strong>Resumen de actualización (Codex)</strong>
@@ -2426,6 +2427,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
             <li>La raíz <code>/</code> abre directamente el menú.</li>
             <li>La ruta anterior <code>/menu</code> redirige a la página principal.</li>
             <li>El logo y la navegación pública regresan al menú principal.</li>
+            <li>Se eliminaron las llamadas obsoletas al helper anterior de encabezados administrativos; <code>ProductImageManager</code> ahora utiliza el helper centralizado <code>adminRequest()</code>.</li>
           </ul>
         </div>
       </section>
@@ -2960,16 +2962,6 @@ function ProductProfitSummary({ item }) {
 }
 
 
-async function parseFunctionResponse(response, fallbackMessage) {
-  const text = await response.text();
-  if (!text) return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { ok: false, error: text || fallbackMessage };
-  }
-}
-
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -3012,19 +3004,16 @@ function ProductImageManager({ item, category, images, onSaveProduct, refreshPro
 
         setMessage(`Subiendo ${file.name}...`);
         const base64 = await fileToBase64(file);
-        const response = await fetch('/.netlify/functions/upload-product-image', {
+        await adminRequest('upload-product-image', {
           method: 'POST',
-          headers: await adminAuthHeaders(),
-          body: JSON.stringify({
-                        productId,
+          body: {
+            productId,
             fileName: file.name,
             mimeType: file.type,
             base64,
             sortOrder: images.length + fileIndex
-          })
+          }
         });
-        const result = await parseFunctionResponse(response, 'No se pudo subir la imagen.');
-        if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo subir la imagen.');
       }
       await refreshProductImages();
       setMessage('Imagen subida a Supabase.');
@@ -3058,13 +3047,13 @@ function ProductImageManager({ item, category, images, onSaveProduct, refreshPro
     setUploading(true);
     setMessage('');
     try {
-      const response = await fetch('/.netlify/functions/upload-product-image', {
+      const result = await adminRequest('upload-product-image', {
         method: 'DELETE',
-        headers: await adminAuthHeaders(),
-        body: JSON.stringify({ id: image.id, storage_path: image.storage_path })
+        body: {
+          id: image.id,
+          storage_path: image.storage_path
+        }
       });
-      const result = await parseFunctionResponse(response, 'No se pudo eliminar la imagen.');
-      if (!response.ok || result.ok === false) throw new Error(result.error || 'No se pudo eliminar la imagen.');
       await refreshProductImages();
       setMessage(result.warning || 'Imagen eliminada.');
     } catch (error) {
