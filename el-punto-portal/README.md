@@ -200,6 +200,35 @@ Notas de seguridad:
 - `netlify/functions/stripe-webhook.js`
 - `netlify/functions/admin-orders.js`
 
+## Error al guardar pedidos: `captured_by_name` en `admin_orders`
+
+Si aparece `Could not find the 'captured_by_name' column of 'admin_orders' in the schema cache`
+(o el mismo error para `captured_by_user_id`), la base de datos no tiene las columnas
+que usa la función `admin-manual-orders` para identificar al administrador autenticado.
+
+1. Abre el **SQL Editor** del proyecto Supabase conectado al sitio Netlify.
+2. Ejecuta completo `supabase/admin_order_capturers.sql`. Requiere que exista
+   `admin_orders`; para una instalación nueva, ejecuta primero `supabase/schema.sql`
+   y `supabase/admin_orders.sql`.
+3. Espera unos segundos a que PostgREST recargue el esquema y vuelve a guardar el pedido.
+4. Confirma que se guardó una sola vez y que **Capturado por** muestra al administrador.
+
+La migración agrega ambas columnas, conserva los pedidos existentes y copia su
+`captured_by` a `captured_by_name` cuando falta. No necesita un nuevo deploy de Netlify
+para corregir este error. No cambies las políticas RLS ni expongas la service role key.
+
+Desplegar un PR o un Deploy Preview en Netlify **no ejecuta las migraciones SQL**.
+Si el error persiste después de ejecutar el archivo, comprueba que el `SUPABASE_URL`
+del contexto de Netlify afectado (Deploy Preview o Production) corresponda al proyecto
+Supabase donde ejecutaste la migración.
+
+La función de pedidos también admite el esquema anterior: si PostgREST rechaza una
+columna nueva con `PGRST204`, reintenta sin esa columna y conserva el nombre del
+administrador autenticado en `captured_by`, tanto para el ticket como para los reportes.
+Esto requiere desplegar la función actualizada. Hasta aplicar la migración, las columnas
+ausentes no se guardan (incluido el identificador del usuario si falta
+`captured_by_user_id`). Otros errores se devuelven sin reintentos de inserción.
+
 ## Costos, descuentos y reordenar categorías
 
 Para habilitar costos internos, precio con descuento y utilidad, ejecuta también:

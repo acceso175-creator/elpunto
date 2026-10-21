@@ -21,6 +21,14 @@ create table if not exists public.admin_orders (
   updated_by text,
   updated_at timestamptz not null default now()
 );
+-- CREATE TABLE IF NOT EXISTS no actualiza tablas de instalaciones anteriores.
+alter table public.admin_orders
+  add column if not exists captured_by_user_id uuid references auth.users(id) on delete set null,
+  add column if not exists captured_by_name text;
+update public.admin_orders
+set captured_by_name = captured_by
+where captured_by_name is null;
+
 create table if not exists public.admin_order_items (
   id uuid primary key default gen_random_uuid(), order_id uuid not null references public.admin_orders(id) on delete cascade,
   product_id uuid references public.products(id) on delete set null, product_name text not null,
@@ -52,3 +60,5 @@ create index if not exists admin_orders_platform_pending_idx on public.admin_ord
 create index if not exists admin_orders_paid_at_idx on public.admin_orders(paid_at desc);
 create index if not exists order_edit_history_order_id_idx on public.order_edit_history(order_id, created_at desc);
 alter table public.order_edit_history enable row level security;
+
+notify pgrst, 'reload schema';

@@ -22,6 +22,19 @@ async function recordHistory(supabase, orderId, previousData, newData, reason, e
   const { error } = await supabase.from('order_edit_history').insert({ order_id: orderId, previous_data: previousData, new_data: newData, reason: String(reason || '').trim(), edited_by: String(editedBy || 'admin').trim() || 'admin' });
   if (error) console.error('[order_edit_history]', error.message || error);
 }
+async function insertManualOrder(supabase, orderPayload) {
+  const payload = { ...orderPayload };
+  // PGRST204 rejects the request before insertion. Only retry missing optional
+  // capture fields; captured_by always keeps the authenticated admin's name.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = await supabase.from('admin_orders').insert(payload).select().single();
+    const missingColumn = result.error?.code === 'PGRST204'
+      && result.error.message?.match(/^Could not find the '(captured_by_name|captured_by_user_id)' column of 'admin_orders' in the schema cache$/)?.[1];
+    if (!missingColumn || !Object.hasOwn(payload, missingColumn) || attempt === 2) return result;
+    delete payload[missingColumn];
+    console.warn(`[admin-manual-orders] Falta ${missingColumn}; aplicar supabase/admin_order_capturers.sql. Se conserva captured_by.`);
+  }
+}
 export async function handler(event) {
   try {
     const body = event.httpMethod === 'GET' ? {} : parseBody(event);
@@ -79,8 +92,8 @@ export async function handler(event) {
     const subtotal = money(cleanItems.reduce((sum, item) => sum + item.total_price, 0)); const discount = money(body.discountTotal); const status = body.paymentMethod === 'plataformas' ? 'pendiente' : body.status;
     const capturedByName = admin.displayName || admin.email || 'Sin identificar';
     const orderPayload = { customer_name: body.customerName || null, customer_phone: body.customerPhone || null, order_type: body.orderType, payment_method: body.paymentMethod, status, paid_at: status === 'pagado' ? new Date().toISOString() : null, subtotal, discount_total: discount, total: Math.max(0, money(subtotal - discount)), notes: body.notes || null, captured_by: capturedByName, captured_by_user_id: admin.userId, captured_by_name: capturedByName, updated_by: capturedByName };
-    const { data: order, error } = await supabase.from('admin_orders').insert(orderPayload).select().single(); if (error) throw error;
-    const { error: itemsError } = await supabase.from('admin_order_items').insert(cleanItems.map((item) => ({ ...item, order_id: order.id }))); if (itemsError) { await supabase.from('admin_orders').delete().eq('id', order.id); throw itemsError; }
-    return json(201, { order });
+    const { data: order, error } = await insertManualOrder(supabase, orderPayload); if (error) throw error;
+    const { data: savedItems, error: itemsError } = await supabase.from('admin_order_items').insert(cleanItems.map((item) => ({ ...item, order_id: order.id }))).select(); if (itemsError) { await supabase.from('admin_orders').delete().eq('id', order.id); throw itemsError; }
+    return json(201, { order: { ...order, admin_order_items: savedItems } });
   } catch (error) { return json(error.statusCode || 500, { error: error.message || 'Error inesperado en pedidos manuales.' }); }
 }
