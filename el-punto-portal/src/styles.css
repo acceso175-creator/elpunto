@@ -1468,6 +1468,7 @@ main { padding-top: 84px; }
 .admin-product-pick p { color:var(--muted); margin:0; font-size:.85rem; }
 .admin-product-pick fieldset { border:1px solid var(--line); border-radius:12px; padding:.45rem; }
 .admin-order-cart { position:sticky; top:1rem; max-height:calc(100vh - 2rem); overflow:auto; }
+.order-save-notice { margin:0; padding:.8rem 1rem; border:1px solid #5dbd89; border-radius:12px; background:#143c2b; color:#c7f6dc; font-weight:700; }
 .admin-cart-line { display:grid; gap:.45rem; padding:.7rem 0; border-bottom:1px solid var(--line); }
 .admin-cart-line div { display:flex; gap:.4rem; align-items:center; }
 .cut-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:1rem; margin-top:1rem; }

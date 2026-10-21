@@ -80,7 +80,7 @@ export async function handler(event) {
     const capturedByName = admin.displayName || admin.email || 'Sin identificar';
     const orderPayload = { customer_name: body.customerName || null, customer_phone: body.customerPhone || null, order_type: body.orderType, payment_method: body.paymentMethod, status, paid_at: status === 'pagado' ? new Date().toISOString() : null, subtotal, discount_total: discount, total: Math.max(0, money(subtotal - discount)), notes: body.notes || null, captured_by: capturedByName, captured_by_user_id: admin.userId, captured_by_name: capturedByName, updated_by: capturedByName };
     const { data: order, error } = await supabase.from('admin_orders').insert(orderPayload).select().single(); if (error) throw error;
-    const { error: itemsError } = await supabase.from('admin_order_items').insert(cleanItems.map((item) => ({ ...item, order_id: order.id }))); if (itemsError) { await supabase.from('admin_orders').delete().eq('id', order.id); throw itemsError; }
-    return json(201, { order });
+    const { data: savedItems, error: itemsError } = await supabase.from('admin_order_items').insert(cleanItems.map((item) => ({ ...item, order_id: order.id }))).select(); if (itemsError) { await supabase.from('admin_orders').delete().eq('id', order.id); throw itemsError; }
+    return json(201, { order: { ...order, admin_order_items: savedItems } });
   } catch (error) { return json(error.statusCode || 500, { error: error.message || 'Error inesperado en pedidos manuales.' }); }
 }
