@@ -217,6 +217,18 @@ La migración agrega ambas columnas, conserva los pedidos existentes y copia su
 `captured_by` a `captured_by_name` cuando falta. No necesita un nuevo deploy de Netlify
 para corregir este error. No cambies las políticas RLS ni expongas la service role key.
 
+Desplegar un PR o un Deploy Preview en Netlify **no ejecuta las migraciones SQL**.
+Si el error persiste después de ejecutar el archivo, comprueba que el `SUPABASE_URL`
+del contexto de Netlify afectado (Deploy Preview o Production) corresponda al proyecto
+Supabase donde ejecutaste la migración.
+
+La función de pedidos también admite el esquema anterior: si PostgREST rechaza una
+columna nueva con `PGRST204`, reintenta sin esa columna y conserva el nombre del
+administrador autenticado en `captured_by`, tanto para el ticket como para los reportes.
+Esto requiere desplegar la función actualizada. Hasta aplicar la migración, las columnas
+ausentes no se guardan (incluido el identificador del usuario si falta
+`captured_by_user_id`). Otros errores se devuelven sin reintentos de inserción.
+
 ## Costos, descuentos y reordenar categorías
 
 Para habilitar costos internos, precio con descuento y utilidad, ejecuta también:

@@ -16,16 +16,27 @@ mock.module('../netlify/functions/_supabaseAdmin.js', {
 });
 const { handler } = await import('../netlify/functions/admin-manual-orders.js');
 
-function setup({ itemsError = null } = {}) {
+function setup({ itemsError = null, missingColumns = [], orderError = null } = {}) {
   let savedOrder;
   let savedItems;
   let deletedId;
+  const attempts = [];
+  let persistedOrders = 0;
   database = {
     from(table) {
       if (table === 'admin_orders') return {
         insert(payload) {
-          savedOrder = { ...payload, id: 'order-1', order_number: 'ADM-001' };
-          return { select: () => ({ single: async () => ({ data: savedOrder, error: null }) }) };
+          attempts.push({ ...payload });
+          return { select: () => ({ single: async () => {
+            const column = missingColumns.find((name) => Object.hasOwn(payload, name));
+            if (column) return { data: null, error: {
+              code: 'PGRST204', message: `Could not find the '${column}' column of 'admin_orders' in the schema cache`
+            } };
+            if (orderError) return { data: null, error: orderError };
+            savedOrder = { ...payload, id: 'order-1', order_number: 'ADM-001' };
+            persistedOrders += 1;
+            return { data: savedOrder, error: null };
+          } }) };
         },
         delete: () => ({ eq: async (_, id) => { deletedId = id; return { error: null }; } })
       };
@@ -38,7 +49,7 @@ function setup({ itemsError = null } = {}) {
       };
     }
   };
-  return { get order() { return savedOrder; }, get items() { return savedItems; }, get deletedId() { return deletedId; } };
+  return { attempts, get persistedOrders() { return persistedOrders; }, get order() { return savedOrder; }, get items() { return savedItems; }, get deletedId() { return deletedId; } };
 }
 
 const body = {
@@ -61,7 +72,56 @@ test('saved order includes persisted receipt items, amounts, options and capture
   assert.equal(order.total, 150);
   assert.equal(order.captured_by_name, admin.displayName);
   assert.equal(order.captured_by_user_id, admin.userId);
+  assert.equal(saved.attempts.length, 1);
+  assert.equal(saved.persistedOrders, 1);
 });
+
+for (const missingColumns of [
+  ['captured_by_name'],
+  ['captured_by_user_id'],
+  ['captured_by_name', 'captured_by_user_id'],
+  ['captured_by_user_id', 'captured_by_name']
+]) {
+  test(`legacy schema saves one printable order with missing ${missingColumns.join(', ')}`, async () => {
+    const saved = setup({ missingColumns });
+    const response = await handler({ httpMethod: 'POST', body: JSON.stringify({
+      ...body, capturedBy: 'Nombre falsificado', captured_by_name: 'Nombre falsificado'
+    }) });
+    assert.equal(response.statusCode, 201);
+    const { order } = JSON.parse(response.body);
+    assert.equal(order.captured_by, admin.displayName);
+    assert.equal(order.updated_by, admin.displayName);
+    assert.equal(saved.persistedOrders, 1);
+    assert.equal(saved.attempts.length, missingColumns.length + 1);
+    assert.equal(order.total, 150);
+    assert.deepEqual(order.admin_order_items, saved.items);
+    assert.equal(order.admin_order_items[0].product_name, 'Chilaquiles');
+    assert.equal(order.admin_order_items[0].item_notes, 'Sin cebolla');
+    for (const field of ['captured_by_name', 'captured_by_user_id']) {
+      if (missingColumns.includes(field)) assert.equal(Object.hasOwn(order, field), false);
+      else assert.equal(order[field], field === 'captured_by_name' ? admin.displayName : admin.userId);
+    }
+  });
+}
+
+for (const orderError of [
+  { code: 'PGRST204', message: "Could not find the 'total' column of 'admin_orders' in the schema cache" },
+  { code: 'PGRST204', message: "Could not find the 'captured_by_name' column of 'other_table' in the schema cache" },
+  { code: '23503', message: 'Foreign key violation' },
+  { code: '42501', message: 'Permission denied' },
+  { code: 'PGRST000', message: 'Connection failed' },
+  { code: '42703', message: 'column captured_by_name does not exist' }
+]) {
+  test(`does not retry unrelated error: ${orderError.code} ${orderError.message}`, async () => {
+    const saved = setup({ orderError });
+    const response = await handler({ httpMethod: 'POST', body: JSON.stringify(body) });
+    assert.equal(response.statusCode, 500);
+    assert.deepEqual(JSON.parse(response.body), { error: orderError.message });
+    assert.equal(saved.attempts.length, 1);
+    assert.equal(saved.persistedOrders, 0);
+    assert.equal(saved.items, undefined);
+  });
+}
 
 test('item persistence failure rolls back the order and never returns a printable success', async () => {
   const saved = setup({ itemsError: { message: 'No se pudieron guardar los productos.' } });
