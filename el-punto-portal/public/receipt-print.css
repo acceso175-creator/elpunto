@@ -1,0 +1,15 @@
+@import url("/receipt-ticket.css");
+/* The driver selects 58 mm roll media. CSS cannot express a roll with an
+   automatic height using `size: 58mm auto` (that is invalid CSS). Use the
+   selected media size and natural document flow instead of a fixed page height. */
+@page { size: auto; margin: 0; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: auto; min-height: 0; background: #fff; color: #000; }
+#ticket { width: 58mm; max-width: 100%; margin: 0; padding: 0; }
+.print-controls { max-width: 32rem; padding: 1rem; font: 14px/1.4 Arial, sans-serif; }
+.print-controls button { min-height: 44px; }
+@media print {
+  .print-controls { display: none !important; }
+  html, body, #ticket { height: auto; min-height: 0; overflow: visible; }
+  .receipt-ticket { color: #000; background: #fff; box-shadow: none; }
+}

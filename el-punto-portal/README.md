@@ -254,3 +254,35 @@ Para habilitar costos internos, precio con descuento y utilidad, ejecuta tambié
 - Margen con descuento = `(discount_price - cost) / discount_price * 100`.
 - Precio efectivo para carrito, WhatsApp y Stripe = `discount_price` cuando `discount_active = true` y `discount_price` es numérico válido; en caso contrario usa `price`.
 - El costo y la utilidad solo se muestran en Admin, nunca al cliente.
+
+## Impresión térmica de tickets (58 mm)
+
+«Imprimir ticket» abre `/receipt-print.html` en una pestaña independiente, sin el
+DOM ni los estilos del administrador. El ticket se renderiza de forma síncrona a
+partir del mismo componente y datos existentes; una copia en `sessionStorage`
+permite recargar o reimprimir desde esa pestaña, sin datos de cliente en la URL.
+El navegador debe permitir ventanas emergentes y almacenamiento de sesión.
+
+La página espera su carga completa, fuentes, imágenes y dos ciclos de renderizado
+antes de llamar a `window.print()`. No se elimina ni se cierra automáticamente:
+el servicio Bluetooth de Android puede consumir el documento después de que
+`print()` regresa. El flujo anterior usaba un iframe invisible eliminado a los
+1,2 segundos, lo que podía dejar al servicio Android sin el documento del ticket.
+La causa exacta del comportamiento del controlador debe confirmarse en el equipo.
+
+El papel se selecciona como **58 mm** en el servicio de impresión Android o en el
+controlador de escritorio, con márgenes en cero y encabezados/pies del navegador
+desactivados. El ancho útil del ticket es **48 mm**, compartido con la vista previa.
+`@page` usa `size: auto; margin: 0` para respetar ese papel: `58mm auto` no es una
+medida válida de CSS. No se fuerza altura ni se calcula con píxeles; el documento
+fluye y puede paginar si el controlador requiere páginas. La longitud física y el
+avance de papel dependen de las opciones del servicio/controlador.
+
+Validación física pendiente en SUZWIP: probar Android por Bluetooth y computadora
+con un pedido corto, otro de muchos productos, nombres/notas largos, descuentos y
+distintos métodos de pago. Confirmar que la vista previa coincide con el papel,
+que aparece el total final y que no se imprimen controles ni páginas adicionales.
+Cancelar y volver a imprimir, y repetir tras recargar la pestaña del ticket.
+
+Pruebas automatizadas del ciclo de impresión (sin nuevas dependencias):
+`node --test tests/receipt-print.test.mjs`.

@@ -1,0 +1,13 @@
+.receipt-ticket, .receipt-ticket * { box-sizing: border-box; }
+.receipt-ticket { color: #000; background: #fff; box-shadow: none; border: 0; width: 48mm; max-width: 100%; margin: 0 auto; padding: 0; font: 11px/1.3 Arial, Helvetica, sans-serif; overflow-wrap: anywhere; }
+.receipt-ticket__header, .receipt-ticket footer { text-align: center; }
+.receipt-ticket__header > * { display: block; margin-bottom: 1mm; }
+.receipt-ticket__header strong { font-size: 15px; }
+.receipt-ticket__meta, .receipt-ticket__items, .receipt-ticket__totals { padding: 2mm 0; border-top: 1px dashed #000; }
+.receipt-ticket__meta > span { display: block; margin-bottom: 1mm; }
+.receipt-ticket__item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1mm 2mm; margin-bottom: 1.5mm; break-inside: avoid; page-break-inside: avoid; }
+.receipt-ticket__item small { display: block; grid-column: 1 / -1; }
+.receipt-ticket__totals span, .receipt-ticket__totals strong { display: flex; justify-content: space-between; gap: 2mm; margin-bottom: 1mm; break-inside: avoid; }
+.receipt-ticket__totals b { white-space: nowrap; }
+.receipt-ticket__totals strong { font-size: 14px; border-top: 1px dashed #000; padding-top: 1.5mm; }
+.receipt-ticket__notes { border-top: 1px dashed #000; padding-top: 2mm; margin: 0 0 2mm; white-space: pre-wrap; }
