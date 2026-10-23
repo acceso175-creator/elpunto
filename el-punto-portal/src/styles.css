@@ -1,3 +1,4 @@
+@import url("/receipt-ticket.css");
 :root {
   color-scheme: dark;
   --bg: #080a0b;
@@ -1534,15 +1535,7 @@ main { padding-top: 84px; }
 .order-detail-totals { justify-content:flex-end; padding-top:.6rem; border-top:1px solid var(--line); }
 .order-detail-actions { padding-top:.75rem; border-top:1px solid var(--line); }
 .receipt-preview summary { cursor:pointer; font-weight:900; margin-bottom:.65rem; }
-.receipt-ticket { width: 76mm; max-width: 100%; background: #fff; color:#000; padding: 3mm; font-family: Arial, Helvetica, sans-serif; font-size: 11px; line-height: 1.25; box-shadow:none; border:0; }
-.receipt-ticket__header, .receipt-ticket footer { text-align:center; display:grid; gap:1mm; }
-.receipt-ticket__header strong { font-size: 15px; }
-.receipt-ticket__meta, .receipt-ticket__items, .receipt-ticket__totals { display:grid; gap:1.5mm; padding:2mm 0; border-top:1px dashed #000; }
-.receipt-ticket__item { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:2mm; break-inside:avoid; page-break-inside:avoid; }
-.receipt-ticket__item small { display:block; grid-column:1 / -1; }
-.receipt-ticket__totals span, .receipt-ticket__totals strong { display:flex; justify-content:space-between; gap:4mm; }
-.receipt-ticket__totals strong { font-size: 14px; border-top:1px dashed #000; padding-top:1.5mm; }
-.receipt-ticket__notes { border-top:1px dashed #000; padding-top:2mm; margin:0 0 2mm; }
+
 @media (max-width: 760px) {
   .admin-orders-table .order-row { margin-bottom:0; border-bottom-left-radius:0; border-bottom-right-radius:0; }
   .admin-orders-table .order-detail-row { margin-top:0; border-top:0; border-top-left-radius:0; border-top-right-radius:0; }

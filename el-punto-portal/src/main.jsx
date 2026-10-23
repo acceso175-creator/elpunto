@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { flushSync } from 'react-dom';
 import { BUSINESS_PHONE_DISPLAY, BUSINESS_PHONE_TEL, BUSINESS_WHATSAPP, BUSINESS_WHATSAPP_URL } from './businessConfig.js';
 import { businessDefaults, initialMenu } from './menuData.js';
 import { isSupabaseConfigured, listProductImages, supabase } from './lib/supabaseClient.js';
@@ -1698,35 +1699,34 @@ function ReceiptTicket({ order, className = '' }) {
 
 
 const RECEIPT_WIDTH_MM = 80;
-const RECEIPT_CONTENT_WIDTH_MM = 72;
-const PX_PER_MM = 96 / 25.4;
 const MM_TO_PT = 72 / 25.4;
 
-function receiptStyles(pageHeightMm = 120) {
-  return `@page{size:${RECEIPT_WIDTH_MM}mm ${pageHeightMm}mm;margin:0}html,body{width:${RECEIPT_WIDTH_MM}mm;min-height:0;margin:0;padding:0;background:#fff}.receipt-ticket,.receipt-ticket *{box-sizing:border-box}.receipt-ticket{width:${RECEIPT_CONTENT_WIDTH_MM}mm;margin:0 auto;padding:3mm 2mm;color:#000;background:#fff;font-family:Arial,sans-serif;font-size:11px;line-height:1.3;overflow:visible}.receipt-ticket__header,.receipt-ticket footer{text-align:center;display:grid;gap:1mm}.receipt-ticket__header strong{font-size:15px}.receipt-ticket__meta,.receipt-ticket__items,.receipt-ticket__totals{display:grid;gap:1.5mm;padding:2mm 0;border-top:1px dashed #000}.receipt-ticket__item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2mm;break-inside:avoid;page-break-inside:avoid}.receipt-ticket__item small{display:block;grid-column:1/-1}.receipt-ticket__totals span,.receipt-ticket__totals strong{display:flex;justify-content:space-between;gap:4mm}.receipt-ticket__totals strong{font-size:15px;border-top:1px dashed #000;padding-top:1.5mm}.receipt-ticket__notes{border-top:1px dashed #000;padding-top:2mm;margin:0 0 2mm}`;
-}
-
-async function printReceipt(order) {
-  const iframe = document.createElement('iframe');
-  iframe.setAttribute('aria-hidden', 'true');
-  iframe.style.position = 'fixed'; iframe.style.right = '0'; iframe.style.bottom = '0'; iframe.style.width = '0'; iframe.style.height = '0'; iframe.style.border = '0';
-  document.body.appendChild(iframe);
-  const doc = iframe.contentDocument || iframe.contentWindow?.document;
-  if (!doc) return;
-  doc.open();
-  doc.write(`<!doctype html><html><head><meta charset="utf-8"><title>Ticket ${order.order_number || ''}</title><style id="receipt-print-style">${receiptStyles(120)}</style></head><body><div id="receipt-print-root"></div></body></html>`);
-  doc.close();
-  createRoot(doc.getElementById('receipt-print-root')).render(<ReceiptTicket order={order} />);
-  const win = iframe.contentWindow;
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  if (doc.fonts?.ready) await doc.fonts.ready;
-  const receipt = doc.querySelector('.receipt-ticket');
-  const contentHeightMm = (receipt?.scrollHeight || 0) / PX_PER_MM;
-  const finalHeightMm = Math.max(80, Math.ceil(contentHeightMm + 6));
-  doc.getElementById('receipt-print-style').textContent = receiptStyles(finalHeightMm);
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  win?.focus(); win?.print();
-  window.setTimeout(() => iframe.remove(), 1200);
+// A real top-level document lets Android print services capture the same page
+// shown in preview, even when they read it after window.print() returns.
+function printReceipt(order) {
+  if (!order) return;
+  const key = `elpunto_receipt_${crypto.randomUUID()}`;
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    // Render only the receipt into a detached container, never clone admin DOM.
+    flushSync(() => root.render(<ReceiptTicket order={order} />));
+    sessionStorage.setItem(key, JSON.stringify({
+      title: `Ticket ${order.order_number || ''}`,
+      markup: container.innerHTML
+    }));
+    // A new same-origin tab receives its own copy of sessionStorage. Keep the
+    // receipt there for reload/reprint; never transmit customer data in the URL.
+    const printWindow = window.open(`/receipt-print.html#${key}`, '_blank');
+    if (!printWindow) {
+      window.alert('Permite abrir ventanas emergentes para imprimir el ticket.');
+    }
+  } catch {
+    window.alert('No se pudo abrir el ticket para impresión. Revisa que el navegador permita el almacenamiento de sesión.');
+  } finally {
+    root.unmount();
+    sessionStorage.removeItem(key);
+  }
 }
 
 function wrapPdfText(text, maxChars = 38) {
