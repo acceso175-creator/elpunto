@@ -1352,7 +1352,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
       const opts = selectedOptionsText(item.selectedOptions, ', ');
       const removed = item.removedIngredients?.length ? ` | Sin: ${item.removedIngredients.join(', ')}` : '';
       const linePrice = item.line_total ?? calculateLine(item) * item.quantity;
-      const priceText = linePrice ? ` | Subtotal: ${formatMoney(linePrice)}` : '';
+      const priceText = !confirmedItems && !hasNumericPrice(item) ? ' | Precio por confirmar' : linePrice ? ` | Subtotal: ${formatMoney(linePrice)}` : '';
       return `${index + 1}. ${item.quantity} x ${item.name}${opts ? ` (${opts})` : ''}${removed}${priceText}`;
     }).join('\n');
 
@@ -1361,7 +1361,7 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
       : '';
 
     const messageTotal = confirmedTotal ?? cartTotal;
-    const totalText = messageTotal ? formatMoney(messageTotal) : 'Por confirmar';
+    const totalText = hasPriceConfirmation && confirmedTotal === null ? 'Por confirmar' : messageTotal ? formatMoney(messageTotal) : 'Por confirmar';
     const paymentNote = payment === 'pago_en_linea'
       ? '\nEstado: pendiente de pago'
       : payment === 'criptomonedas'
@@ -1412,6 +1412,14 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
       return;
     }
     if (!businessWhatsappNumber(business)) { setOrderNotice('Falta configurar el WhatsApp del negocio.'); return; }
+    if (hasPriceConfirmation) {
+      const url = `${BUSINESS_WHATSAPP_URL}?text=${encodeURIComponent(buildMessage())}`;
+      window.open(url, '_blank');
+      setWhatsappUrl(url);
+      setOrderNotice('Este pedido tiene precios por confirmar. Envíalo por WhatsApp para cotizarlo antes de registrarlo como venta.');
+      bumpMetric('orderRequests');
+      return;
+    }
     const payload = { cart, customerName: profile.name, customerPhone: profile.phone, orderType, paymentMethod: payment, deliveryAddress: orderType === 'domicilio' ? [address, geoLink].filter(Boolean).join(' | ') : '', notes };
     const signature = JSON.stringify(payload);
     if (submission.current.signature !== signature) submission.current = { signature, id: createStableUuid() };
