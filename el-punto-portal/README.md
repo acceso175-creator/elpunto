@@ -290,6 +290,7 @@ Pruebas automatizadas del ciclo de impresión (sin nuevas dependencias):
 # Actualización de operación del panel
 
 - Al enviar un pedido por WhatsApp, primero se registra en `orders` y `order_items`. Los importes y modificadores se validan en el servidor con productos y plantillas activos.
+- Los productos sin precio conservan la cotización directa por WhatsApp. No se registra un importe de venta inventado ni se permite pagarlos por Stripe.
 - En **Pedidos del portal**, visible en el inicio de admin y en Capturar pedido, el administrador elige el método y estado de pago, confirma y después imprime el ticket. Se actualiza cada 20 segundos. El UUID y folio del pedido se conservan al pasarlo a `admin_orders`, evitando duplicados por reintentos o confirmaciones simultáneas.
 - Confirmar un pedido y recibir el pago son pasos distintos. Un pedido pendiente aparece en el corte; los cobros aumentan cuando se registra como pagado. Los pagos de Stripe se consideran recibidos solo después de la verificación del webhook.
 - Capturar pedido incluye plantillas de combos, selecciones obligatorias y botones para quitar ingredientes. Las observaciones se conservan en el ticket.
