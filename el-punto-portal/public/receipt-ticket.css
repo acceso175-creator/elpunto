@@ -11,3 +11,8 @@
 .receipt-ticket__totals b { white-space: nowrap; }
 .receipt-ticket__totals strong { font-size: 14px; border-top: 1px dashed #000; padding-top: 1.5mm; }
 .receipt-ticket__notes { border-top: 1px dashed #000; padding-top: 2mm; margin: 0 0 2mm; white-space: pre-wrap; }
+
+.cut-ticket__sale { padding: 2mm 0; border-bottom: 1px dashed #000; }
+.cut-ticket__sale > span, .cut-ticket__sale > strong, .cut-ticket__sale > small { display: block; margin-bottom: 1mm; }
+.cut-ticket__line { display: flex; justify-content: space-between; gap: 2mm; margin-bottom: 1mm; break-inside: avoid; }
+.cut-ticket__line b { white-space: nowrap; }

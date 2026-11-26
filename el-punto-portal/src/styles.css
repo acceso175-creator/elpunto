@@ -1643,3 +1643,17 @@ main { padding-top: 84px; }
   color: var(--text);
   font-weight: 800;
 }
+
+/* Incoming portal orders share the existing admin card and mobile layout. */
+.portal-inbox { margin-bottom: 1.2rem; min-width: 0; }
+.portal-order-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 1rem; }
+.portal-order { border: 1px solid var(--line, #3b3b3b); border-radius: 12px; padding: 1rem; min-width: 0; overflow-wrap: anywhere; }
+.portal-order h4 { margin: 0 0 .5rem; }
+.portal-order-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem .5rem; padding: .6rem 0; border-bottom: 1px solid var(--line, #3b3b3b); }
+.portal-order-item small { grid-column: 1 / -1; }
+.portal-confirmed { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .8rem; padding: 1rem 0; }
+.admin-product-pick fieldset { min-width: 0; }
+.cut-ticket__sale { padding: 2mm 0; border-bottom: 1px dashed #000; }
+.cut-ticket__sale > span, .cut-ticket__sale > strong, .cut-ticket__sale > small { display: block; margin-bottom: 1mm; }
+.cut-ticket__line { display: flex; justify-content: space-between; gap: 2mm; margin-bottom: 1mm; }
+.cut-ticket__line b { white-space: nowrap; }

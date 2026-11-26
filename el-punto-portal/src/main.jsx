@@ -6,6 +6,8 @@ import { businessDefaults, initialMenu } from './menuData.js';
 import { isSupabaseConfigured, listProductImages, supabase } from './lib/supabaseClient.js';
 import { getMenuData, normalizeMenuData } from './services/menuService.js';
 import './styles.css';
+import { salesDateRange } from './lib/salesDates.js';
+import PortalOrdersInbox from './admin/PortalOrdersInbox.jsx';
 
 const STORAGE = {
   menu: 'elpunto_menu_v1',
@@ -1299,6 +1301,10 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
   const [isLocating, setIsLocating] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkoutError, setCheckoutError] = useState('');
+  const [sendingOrder, setSendingOrder] = useState(false);
+  const [orderNotice, setOrderNotice] = useState('');
+  const [whatsappUrl, setWhatsappUrl] = useState('');
+  const submission = useRef({ signature: '', id: '' });
   const selectedPaymentLabel = paymentLabel(payment);
   const itemsMissingPrice = useMemo(() => cartItemsMissingPrice(cart), [cart]);
   const hasPriceConfirmation = itemsMissingPrice.length > 0;
@@ -1339,12 +1345,13 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
     );
   }
 
-  function buildMessage(forStripeOrderNumber = '') {
+  function buildMessage(forStripeOrderNumber = '', confirmedItems = null, confirmedTotal = null) {
     const orderNumber = forStripeOrderNumber || createOrderNumber();
-    const items = cart.map((item, index) => {
+    const messageCart = confirmedItems ? confirmedItems.map((item) => ({ ...item, name: item.product_name, selectedOptions: item.selected_options, removedIngredients: item.removed_ingredients })) : cart;
+    const items = messageCart.map((item, index) => {
       const opts = selectedOptionsText(item.selectedOptions, ', ');
       const removed = item.removedIngredients?.length ? ` | Sin: ${item.removedIngredients.join(', ')}` : '';
-      const linePrice = calculateLine(item) * item.quantity;
+      const linePrice = item.line_total ?? calculateLine(item) * item.quantity;
       const priceText = linePrice ? ` | Subtotal: ${formatMoney(linePrice)}` : '';
       return `${index + 1}. ${item.quantity} x ${item.name}${opts ? ` (${opts})` : ''}${removed}${priceText}`;
     }).join('\n');
@@ -1353,7 +1360,8 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
       ? `\nDirección: ${address || 'pendiente de confirmar'}${geoLink ? `\nUbicación Maps: ${geoLink}` : ''}`
       : '';
 
-    const totalText = cartTotal ? formatMoney(cartTotal) : 'Por confirmar';
+    const messageTotal = confirmedTotal ?? cartTotal;
+    const totalText = messageTotal ? formatMoney(messageTotal) : 'Por confirmar';
     const paymentNote = payment === 'pago_en_linea'
       ? '\nEstado: pendiente de pago'
       : payment === 'criptomonedas'
@@ -1397,19 +1405,30 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
     }
   }
 
-  function sendWhatsApp() {
-    if (!cart.length) return;
-    if (orderType === 'domicilio' && !address && !geoLink) {
-      alert('Para domicilio agrega dirección o ubicación antes de mandar el pedido.');
+  async function sendWhatsApp() {
+    if (!cart.length || sendingOrder || payment === 'pago_en_linea') return;
+    if (orderType === 'domicilio' && !address.trim() && !geoLink) {
+      setOrderNotice('Para domicilio agrega dirección o ubicación antes de enviar el pedido.');
       return;
     }
-    const number = businessWhatsappNumber(business);
-    if (!number) {
-      alert('Falta configurar el número de WhatsApp en Admin.');
-      return;
-    }
-    bumpMetric('orderRequests');
-    window.open(`${BUSINESS_WHATSAPP_URL}?text=${encodeURIComponent(buildMessage())}`, '_blank');
+    if (!businessWhatsappNumber(business)) { setOrderNotice('Falta configurar el WhatsApp del negocio.'); return; }
+    const payload = { cart, customerName: profile.name, customerPhone: profile.phone, orderType, paymentMethod: payment, deliveryAddress: orderType === 'domicilio' ? [address, geoLink].filter(Boolean).join(' | ') : '', notes };
+    const signature = JSON.stringify(payload);
+    if (submission.current.signature !== signature) submission.current = { signature, id: createStableUuid() };
+    // Reserve the tab during the click; async requests otherwise trigger popup blockers.
+    const target = window.open('about:blank', '_blank');
+    setSendingOrder(true); setOrderNotice('Registrando tu pedido...'); setWhatsappUrl('');
+    try {
+      const response = await fetch('/.netlify/functions/submit-portal-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, requestId: submission.current.id }) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'No se pudo registrar el pedido. Intenta nuevamente.');
+      const url = `${BUSINESS_WHATSAPP_URL}?text=${encodeURIComponent(buildMessage(result.orderNumber, result.items, result.total))}`;
+      if (target) { target.opener = null; target.location.href = url; }
+      setWhatsappUrl(url);
+      setOrderNotice(`Pedido ${result.orderNumber} registrado. Envía el mensaje de WhatsApp para acordar disponibilidad y tiempo de entrega.`);
+      bumpMetric('orderRequests');
+    } catch (error) { target?.close(); setOrderNotice(error.message); }
+    finally { setSendingOrder(false); }
   }
 
   return (
@@ -1523,8 +1542,10 @@ function OrderSection({ cart, cartTotal, removeFromCart, clearCart, business, pr
           <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Ej. salsa aparte, poco hielo, sin cebolla..." />
         </label>
 
-        <button className="full" disabled={!cart.length} onClick={sendWhatsApp}>Mandar pedido por WhatsApp</button>
-        <p className="small-note">El portal genera el mensaje. El pedido queda confirmado hasta que el negocio responda por WhatsApp.</p>
+        <button type="button" className="full" disabled={!cart.length || sendingOrder || payment === 'pago_en_linea'} onClick={sendWhatsApp}>{sendingOrder ? 'Registrando pedido...' : 'Mandar pedido por WhatsApp'}</button>
+        {orderNotice && <p role="status" className="small-note">{orderNotice}</p>}
+        {whatsappUrl && <a href={whatsappUrl} target="_blank" rel="noreferrer">Abrir el mensaje en WhatsApp</a>}
+        <p className="small-note">Tu pedido llega al negocio para revisión. Queda confirmado cuando El Punto acepta el pedido.</p>
       </div>
     </section>
   );
@@ -1602,68 +1623,127 @@ function AccountSection({ profile, setProfile }) {
   );
 }
 
-function ManualOrderCapture({ menu, onBack, onSaved, adminSession, adminProfile }) {
-  const [search, setSearch] = useState(''); const [cart, setCart] = useState([]); const [selected, setSelected] = useState({});
+function PortalInbox({ onConfirmed }) {
+  return <PortalOrdersInbox request={adminRequest} printReceipt={printReceipt} formatMoney={formatMoney} paymentLabel={paymentLabel} optionsText={selectedOptionsText} onConfirmed={onConfirmed} />;
+}
+
+function ManualOrderCapture({ menu, onBack, onSaved, adminSession }) {
+  const [search, setSearch] = useState('');
+  const [cart, setCart] = useState([]);
+  const [selected, setSelected] = useState({});
+  const [removed, setRemoved] = useState({});
+  const [legacy, setLegacy] = useState({});
   const [form, setForm] = useState({ customerName: '', customerPhone: '', orderType: 'mostrador', paymentMethod: 'efectivo', status: 'pagado', notes: '' });
-  const [status, setStatus] = useState(''); const [lastOrder, setLastOrder] = useState(null); const [isSaving, setIsSaving] = useState(false);
+  const [status, setStatus] = useState('');
+  const [lastOrder, setLastOrder] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const savingRef = useRef(false);
   const categories = menu.map((category) => ({ ...category, items: category.items.filter((item) => item.available !== false && item.name.toLowerCase().includes(search.toLowerCase())) })).filter((category) => category.items.length);
   const total = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
   function toggleOption(product, group, option) {
-    const key = `${product.id}:${group.id || group.name}`; const current = selected[key] || [];
-    setSelected({ ...selected, [key]: group.selectionType === 'multiple' ? (current.some((item) => item.id === option.id) ? current.filter((item) => item.id !== option.id) : current.length < group.maxSelect ? [...current, option] : current) : [option] });
+    const key = `${product.id}:${group.id || group.name}`;
+    setSelected((previous) => {
+      const current = previous[key] || [], has = current.some((item) => item.id === option.id);
+      const next = has ? current.filter((item) => item.id !== option.id) : group.selectionType === 'multiple' ? current.length < Math.max(1, group.maxSelect || 1) ? [...current, option] : current : [option];
+      return { ...previous, [key]: next };
+    });
   }
   function add(product) {
-    const groups = activeOptionGroups(product); const options = dedupeOptionList(groups.flatMap((group) => (selected[`${product.id}:${group.id || group.name}`] || []).map((option) => ({ groupName: group.name, name: option.name, priceDelta: option.priceDelta || 0, templateId: group.templateId || option.templateId || null }))));
-    const incomplete = groups.find((group) => group.required && (selected[`${product.id}:${group.id || group.name}`] || []).length < Math.max(1, group.minSelect || 1));
+    if (!Number.isFinite(getEffectivePrice(product)) || getEffectivePrice(product) <= 0) return setStatus('Este producto necesita un precio antes de capturarse.');
+    const groups = activeOptionGroups(product);
+    const incomplete = groups.find((group) => {
+      const count = (selected[`${product.id}:${group.id || group.name}`] || []).length;
+      return (group.required || count > 0) && count < Math.max(group.required ? 1 : 0, group.minSelect || 0);
+    });
     if (incomplete) return setStatus(requiredOptionError(incomplete));
-    const unitPrice = (getEffectivePrice(product) || 0) + selectedOptionExtra(options);
-    setCart([...cart, { key: createStableUuid(), productId: product.supabaseProductId || product.id, productName: product.name, quantity: 1, unitPrice, selectedOptions: options, itemNotes: '' }]); setLastOrder(null); setStatus('');
+    const options = groups.flatMap((group) => (selected[`${product.id}:${group.id || group.name}`] || []).map((option) => ({ groupId: group.id, groupName: group.name, optionId: option.id, name: option.name, priceDelta: option.priceDelta || 0, templateId: group.templateId || option.templateId || null })));
+    const legacyOptions = Object.fromEntries(productOptions(product).map((option) => [option.name, legacy[`${product.id}:${option.name}`] ?? option.values?.[0] ?? '']));
+    const chosen = groups.length ? options : legacyOptions;
+    const unitPrice = Math.round(((getEffectivePrice(product) || 0) + selectedOptionExtra(chosen)) * 100) / 100;
+    const without = removed[product.id] || [];
+    setCart((current) => [...current, { key: createStableUuid(), productId: product.supabaseProductId || product.id, productName: product.name, quantity: 1, unitPrice, selectedOptions: chosen, itemNotes: without.length ? `Sin: ${without.join(', ')}` : '' }]);
+    setSelected((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${product.id}:`))));
+    setRemoved((current) => ({ ...current, [product.id]: [] }));
+    setLastOrder(null); setStatus('');
   }
   async function save() {
     if (!cart.length) return setStatus('No se puede guardar un pedido vacío.');
     if (!adminSession?.access_token) return setStatus('Tu sesión no es válida. Inicia sesión nuevamente.');
-    if (isSaving) return;
-    try { setIsSaving(true); setStatus('Guardando pedido...'); const result = await adminRequest('admin-manual-orders', { body: { ...form, items: cart } }); setLastOrder(result.order); setCart([]); setStatus(''); onSaved(); } catch (error) { setStatus(error.message); } finally { setIsSaving(false); }
+    if (savingRef.current) return;
+    savingRef.current = true;
+    try {
+      setIsSaving(true); setStatus('Guardando pedido...');
+      const result = await adminRequest('admin-manual-orders', { body: { ...form, items: cart } });
+      setLastOrder(result.order); setCart([]); setStatus('Pedido guardado. Ya puedes imprimir el ticket.'); await onSaved?.();
+    } catch (error) { setStatus(error.message); }
+    finally { savingRef.current = false; setIsSaving(false); }
   }
-  return <section className="section admin-order-screen"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Capturar pedido</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button className="button--ghost" onClick={() => { setCart([]); setLastOrder(null); setStatus(''); }}>Nuevo pedido</button>{lastOrder && <button className="button--ghost" onClick={() => alert(`${lastOrder.order_number} · ${formatMoney(lastOrder.total)}`)}>Ver último pedido</button>}</div></div>
-    <div className="admin-order-layout"><div className="admin-menu-picker"><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar producto por nombre…" />{categories.map((category) => <div key={category.id}><h3>{category.name}</h3><div className="admin-product-pick-grid">{category.items.map((product) => <article className="admin-product-pick" key={product.id}><strong>{product.name}</strong><span>{hasValidDiscount(product) && <del>{formatMoney(product.price)} </del>}{formatMoney(getEffectivePrice(product))}</span><p>{product.description}</p>{activeOptionGroups(product).map((group) => <fieldset key={group.id || group.name}><legend>{group.name}{group.required ? ' *' : ''}</legend>{group.options.map((option) => <button type="button" className={(selected[`${product.id}:${group.id || group.name}`] || []).some((item) => item.id === option.id) ? 'option-chip option-chip--selected' : 'option-chip'} onClick={() => toggleOption(product, group, option)} key={option.id}>{option.name}{option.priceDelta ? ` +${formatMoney(option.priceDelta)}` : ''}</button>)}</fieldset>)}<button type="button" onClick={() => add(product)}>Agregar</button></article>)}</div></div>)}</div>
-      <aside className="admin-order-cart panel"><h3>Carrito</h3>{cart.length === 0 && <p className="small-note">Agrega productos para comenzar.</p>}{cart.map((item) => <div className="admin-cart-line" key={item.key}><strong>{item.productName}</strong><small>{selectedOptionsText(item.selectedOptions)}</small><div><button className="button--ghost" onClick={() => setCart(cart.map((row) => row.key === item.key ? { ...row, quantity: Math.max(1, row.quantity - 1) } : row))}>−</button><b>{item.quantity}</b><button className="button--ghost" onClick={() => setCart(cart.map((row) => row.key === item.key ? { ...row, quantity: row.quantity + 1 } : row))}>+</button><button className="button--ghost" onClick={() => setCart(cart.filter((row) => row.key !== item.key))}>Quitar</button></div><input placeholder="Notas: sin cebolla…" value={item.itemNotes} onChange={(e) => setCart(cart.map((row) => row.key === item.key ? { ...row, itemNotes: e.target.value } : row))} /><span>{formatMoney(item.unitPrice * item.quantity)}</span></div>)}<h3>Total: {formatMoney(total)}</h3>
-      <div className="form-grid one"><input placeholder="Nombre del cliente (opcional)" value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} /><input type="tel" inputMode="tel" autoComplete="tel" placeholder="Teléfono (opcional)" value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} /><select value={form.orderType} onChange={(e) => setForm({ ...form, orderType: e.target.value })}>{['mostrador','domicilio','recoger'].map((v) => <option key={v}>{v}</option>)}</select><select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, status: e.target.value === 'plataformas' ? 'pendiente' : form.status })}>{ADMIN_PAYMENT_METHODS.map((v) => <option value={v.value} key={v.value}>{v.label}</option>)}</select><select value={form.status} disabled={form.paymentMethod === 'plataformas'} onChange={(e) => setForm({ ...form, status: e.target.value })}>{['pendiente','pagado','cancelado'].map((v) => <option key={v}>{v}</option>)}</select><div className="captured-by-card"><span>Capturado por</span><strong>{adminProfile?.display_name}</strong></div><textarea placeholder="Notas generales" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /><button onClick={save} disabled={!adminSession || !cart.length || isSaving}>{isSaving ? 'Guardando pedido...' : 'Guardar pedido'}</button>
-        <button type="button" className="button--ghost" disabled={!lastOrder || isSaving} onClick={() => printReceipt(lastOrder)}>Imprimir ticket</button>
-        <div aria-live="polite" aria-atomic="true">
-          {lastOrder && <p className="order-save-notice" role="status">Pedido {lastOrder.order_number} guardado correctamente.</p>}
-          {status && <p className="small-note" role="status">{status}</p>}
-        </div></div></aside></div></section>;
+  const patchLine = (key, patch) => setCart((current) => current.map((line) => line.key === key ? { ...line, ...patch } : line));
+  return <section className="section admin-order-screen">
+    <div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Capturar pedido</h2></div><div className="admin-actions"><button type="button" className="button--ghost" onClick={onBack}>Volver</button><button type="button" className="button--ghost" disabled={isSaving} onClick={() => { setCart([]); setSelected({}); setRemoved({}); setLastOrder(null); setStatus(''); }}>Nuevo pedido</button></div></div>
+    <PortalInbox onConfirmed={onSaved} />
+    <div className="admin-order-layout">
+      <div className="admin-menu-picker"><input aria-label="Buscar producto" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar producto por nombre…" />
+        {categories.map((category) => <div key={category.id}><h3>{category.name}</h3><div className="admin-product-pick-grid">{category.items.map((product) => <article className="admin-product-pick" key={product.id}>
+          <strong>{product.name}</strong><span>{hasValidDiscount(product) && <del>{formatMoney(product.price)} </del>}{formatMoney(getEffectivePrice(product))}</span><p>{product.description}</p>
+          {activeOptionGroups(product).map((group) => <fieldset key={group.id || group.name}><legend>{group.name}{group.required ? ' *' : ''}</legend><small>{optionGroupInstruction(group)}</small><div className="option-chips">{group.options.map((option) => <button type="button" aria-pressed={(selected[`${product.id}:${group.id || group.name}`] || []).some((item) => item.id === option.id)} className={(selected[`${product.id}:${group.id || group.name}`] || []).some((item) => item.id === option.id) ? 'option-chip option-chip--selected' : 'option-chip'} onClick={() => toggleOption(product, group, option)} key={option.id}>{option.name}{option.priceDelta ? ` +${formatMoney(option.priceDelta)}` : ''}</button>)}</div></fieldset>)}
+          {!activeOptionGroups(product).length && productOptions(product).map((option) => <label key={option.name}>{option.name}<select value={legacy[`${product.id}:${option.name}`] ?? option.values?.[0] ?? ''} onChange={(event) => setLegacy((current) => ({ ...current, [`${product.id}:${option.name}`]: event.target.value }))}>{(option.values || []).map((value) => <option key={value}>{value}</option>)}</select></label>)}
+          {removableIngredientNames(product.ingredients).length > 0 && <fieldset><legend>Quitar ingredientes</legend><div className="option-chips">{removableIngredientNames(product.ingredients).map((name) => { const checked = (removed[product.id] || []).includes(name); return <button type="button" key={name} aria-pressed={checked} className={checked ? 'option-chip option-chip--selected' : 'option-chip'} onClick={() => setRemoved((current) => ({ ...current, [product.id]: checked ? (current[product.id] || []).filter((value) => value !== name) : [...(current[product.id] || []), name] }))}>Sin {name}</button>; })}</div></fieldset>}
+          <button type="button" onClick={() => add(product)}>Agregar</button>
+        </article>)}</div></div>)}
+      </div>
+      <aside className="admin-order-cart panel"><h3>Carrito</h3>{!cart.length && <p className="small-note">Agrega productos para comenzar.</p>}
+        {cart.map((item) => <div className="admin-cart-line" key={item.key}><strong>{item.productName}</strong><small>{selectedOptionsText(item.selectedOptions)}</small><div><button type="button" aria-label={`Reducir ${item.productName}`} className="button--ghost" onClick={() => patchLine(item.key, { quantity: Math.max(1, item.quantity - 1) })}>−</button><b>{item.quantity}</b><button type="button" aria-label={`Aumentar ${item.productName}`} className="button--ghost" onClick={() => patchLine(item.key, { quantity: item.quantity + 1 })}>+</button><button type="button" className="button--ghost" onClick={() => setCart((current) => current.filter((row) => row.key !== item.key))}>Quitar</button></div><input aria-label={`Notas de ${item.productName}`} placeholder="Notas: sin cebolla…" value={item.itemNotes} onChange={(event) => patchLine(item.key, { itemNotes: event.target.value })} /><span>{formatMoney(item.unitPrice * item.quantity)}</span></div>)}
+        <h3>Total: {formatMoney(total)}</h3><div className="form-grid one">
+          <input placeholder="Nombre del cliente (opcional)" value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} />
+          <input type="tel" placeholder="Teléfono (opcional)" value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} />
+          <label>Entrega<select value={form.orderType} onChange={(event) => setForm({ ...form, orderType: event.target.value })}>{['mostrador','domicilio','recoger'].map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label>Pago<select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value, status: event.target.value === 'plataformas' ? 'pendiente' : form.status })}>{ADMIN_PAYMENT_METHODS.map((method) => <option value={method.value} key={method.value}>{method.label}</option>)}</select></label>
+          <label>Estado<select value={form.status} disabled={form.paymentMethod === 'plataformas'} onChange={(event) => setForm({ ...form, status: event.target.value })}>{['pendiente','pagado','cancelado'].map((value) => <option key={value}>{value}</option>)}</select></label>
+          <textarea placeholder="Notas del pedido" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />
+          <button type="button" disabled={isSaving || !cart.length} onClick={save}>{isSaving ? 'Guardando...' : 'Guardar pedido'}</button>
+          {status && <p role="status">{status}</p>}
+          <button type="button" className="button--ghost" disabled={!lastOrder || isSaving} onClick={() => printReceipt(lastOrder)}>Imprimir ticket</button>
+          <button type="button" className="button--ghost" disabled={!lastOrder || isSaving} onClick={() => downloadReceiptPdf(lastOrder)}>Descargar PDF</button>
+        </div>
+      </aside>
+    </div>
+  </section>;
 }
 
 function AdminCuts({ onBack }) {
   const today = dateInputFromParts(...chihuahuaDateParts());
-  const [date, setDate] = useState(today); const [data, setData] = useState(null); const [status, setStatus] = useState(''); const [expandedOrderId, setExpandedOrderId] = useState(null);
+  const [date, setDate] = useState(today); const [toDate, setToDate] = useState(today); const [loading, setLoading] = useState(false); const requestId = useRef(0); const [data, setData] = useState(null); const [status, setStatus] = useState(''); const [expandedOrderId, setExpandedOrderId] = useState(null);
   const formattedDate = new Date(`${date}T12:00:00-06:00`).toLocaleDateString('es-MX', { timeZone: 'America/Chihuahua' });
-  const title = date === today ? 'Corte del día' : `Corte del día: ${formattedDate}`;
-  async function load(selectedDate = date) {
+  const title = date !== toDate ? 'Corte por fechas' : date === today ? 'Corte del día' : `Corte del día: ${formattedDate}`;
+  const currentData = !!data && !loading && data.startDate === date && data.endDate === toDate;
+  async function load(selectedDate = date, selectedEnd = toDate) {
+    const current = ++requestId.current;
+    setLoading(true);
     try {
       setStatus('Actualizando corte...');
-      const end = new Date(`${selectedDate}T12:00:00-06:00`); end.setDate(end.getDate() + 1);
-      const result = await adminRequest('admin-sales-history', { method: 'GET', body: { startDate: `${selectedDate}T00:00:00-06:00`, endDate: end.toISOString(), groupBy: 'day' } });
-      setData(result); setStatus(result.orders.length ? 'Corte actualizado.' : 'No hay ventas en este periodo');
-    } catch (error) { setStatus(error.message); }
+      const result = await adminRequest('admin-sales-history', { method: 'GET', body: { ...salesDateRange(selectedDate, selectedEnd), groupBy: 'day' } });
+      if (current !== requestId.current) return;
+      setData({ ...result, startDate: selectedDate, endDate: selectedEnd });
+      setStatus(result.orders.length ? 'Corte actualizado.' : 'No hay ventas en este periodo');
+    } catch (error) { if (current === requestId.current) { setData(null); setStatus(error.message); } }
+    finally { if (current === requestId.current) setLoading(false); }
   }
-  useEffect(() => { load(today); }, []);
+  useEffect(() => { load(today, today); return () => { ++requestId.current; }; }, []);
   async function cancelOrder(id) { if (!confirm('¿Cancelar este pedido sin eliminarlo?')) return; try { await adminRequest('admin-manual-orders', { method: 'PATCH', body: { id, status: 'cancelado' } }); load(); } catch (error) { setStatus(error.message); } }
   function exportCutCsv() {
-    if (!data) return;
-    const lines = [['Corte del día', date], [], ['Resumen'], ...Object.entries(data.summary).map(([key, value]) => [key, value]), [], ['Pedidos capturados'], ['Hora','Folio','Cliente','Total','Pago','Tipo','Estado','Capturado por'], ...data.orders.map((o) => [new Date(o.created_at).toLocaleTimeString('es-MX'), o.order_number, o.customer_name || '', o.total, o.payment_method, o.order_type, o.status, capturedByName(o)]), [], ['Productos vendidos'], ['Producto','Cantidad','Total vendido','Ticket promedio','Cortesías'], ...data.products.map((p) => [p.product, p.quantity, salesTotalValue(p), p.averageTicket, p.courtesies]), [], ['Ventas por capturista'], ['Capturista','Total vendido','Pedidos','Ticket','Efectivo','Tarjeta','Transferencia','Cortesías','Cancelados'], ...data.capturers.map((c) => [c.capturedBy, salesTotalValue(c), c.paidOrders, c.averageTicket, c.efectivo, c.tarjeta, c.transferencia, c.cortesia, c.canceledOrders])];
-    const blob = new Blob([lines.map((row) => row.map(csvEscape).join(',')).join('\n')], { type: 'text/csv;charset=utf-8' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `corte-${date}.csv`; a.click(); URL.revokeObjectURL(url);
+    if (!currentData) return;
+    const lines = [['Corte', data.startDate, data.endDate], [], ['Resumen'], ...Object.entries(data.summary).map(([key, value]) => [key, value]), [], ['Pedidos capturados'], ['Hora','Folio','Cliente','Total','Pago','Tipo','Estado','Capturado por'], ...data.orders.map((o) => [new Date(o.created_at).toLocaleTimeString('es-MX'), o.order_number, o.customer_name || '', o.total, o.payment_method, o.order_type, o.status, capturedByName(o)]), [], ['Productos vendidos'], ['Producto','Cantidad','Total vendido','Ticket promedio','Cortesías'], ...data.products.map((p) => [p.product, p.quantity, salesTotalValue(p), p.averageTicket, p.courtesies]), [], ['Ventas por capturista'], ['Capturista','Total vendido','Pedidos','Ticket','Efectivo','Tarjeta','Transferencia','Cortesías','Cancelados'], ...data.capturers.map((c) => [c.capturedBy, salesTotalValue(c), c.paidOrders, c.averageTicket, c.efectivo, c.tarjeta, c.transferencia, c.cortesia, c.canceledOrders])];
+    const blob = new Blob([lines.map((row) => row.map(csvEscape).join(',')).join('\n')], { type: 'text/csv;charset=utf-8' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `corte-${data.startDate}-${data.endDate}.csv`; a.click(); URL.revokeObjectURL(url);
   }
   const summary = data?.summary || {};
-  return <section className="section sales-history daily-cut"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>{title}</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button onClick={exportCutCsv}>Exportar corte CSV</button></div></div>
-    <div className="panel history-filters"><div className="admin-actions"><label>Fecha <input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><button onClick={() => load()}>Actualizar corte</button></div><p className="small-note">{status}. Zona horaria: Chihuahua/México.</p></div>
+  return <section className="section sales-history daily-cut"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>{title}</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button type="button" disabled={!currentData} onClick={() => printSalesCut(data, date, toDate)}>Imprimir corte</button><button type="button" disabled={!currentData} onClick={exportCutCsv}>Exportar corte CSV</button></div></div>
+    <div className="panel history-filters"><div className="admin-actions"><label>Desde <input type="date" value={date} onChange={(event) => { if (toDate === date) setToDate(event.target.value); setDate(event.target.value); }} /></label><label>Hasta <input type="date" min={date} value={toDate} onChange={(event) => setToDate(event.target.value)} /></label><button type="button" disabled={loading} onClick={() => load()}>{loading ? 'Consultando...' : 'Actualizar corte'}</button></div><p className="small-note">{status}. Zona horaria: Chihuahua/México.</p></div>
     {data && <><PendingPlatformsCard summary={summary} onShowDetail={() => setExpandedOrderId((data.orders || []).find((o) => o.payment_method === 'plataformas' && o.status === 'pendiente')?.id || null)} /><div className="metric-grid history-summary">{[['Ventas totales','salesTotal'],['Pagos cobrados','paymentsCollected'],['Pagos pendientes de plataformas','platformPendingTotal'],['Efectivo recibido','efectivo'],['Tarjeta','tarjeta'],['Transferencia','transferencia'],['Plataformas pagadas','platformPaid'],['Plataformas pendientes','platformPending'],['Cortesías','cortesia'],['Pedidos pagados','paidOrders'],['Pedidos pendientes','pendingOrders'],['Pedidos cancelados','canceledOrders'],['Número total de pedidos','totalOrders'],['Ticket promedio','averageTicket']].map(([label,key]) => <Metric key={key} label={label} value={String(key).includes('Orders') || key === 'totalOrders' ? summary[key] : formatMoney(summary[key])} />)}</div>{data.orders.length === 0 ? <div className="panel">No hay ventas en este periodo</div> : <>
       <div className="panel"><h3>Por método de pago</h3><div className="cut-grid">{ADMIN_PAYMENT_METHODS.map((method) => <p key={method.value}>{method.label}: <strong>{formatMoney(method.value === 'cortesia' ? summary.cortesia : summary[method.value])}</strong></p>)}</div></div>
       <HistoryTable title="Productos vendidos / más vendidos" headers={['Producto','Cantidad vendida','Total vendido','Ticket promedio','Cortesías']} rows={data.products.map((p) => [p.product,p.quantity,formatMoney(salesTotalValue(p)),formatMoney(p.averageTicket),p.courtesies])} />
       <HistoryTable title="Ventas por capturista" headers={['Capturista','Total vendido','Pedidos','Ticket promedio','Efectivo','Tarjeta','Transferencia','Cortesías','Cancelados']} rows={data.capturers.map((c) => [c.capturedBy,formatMoney(salesTotalValue(c)),c.paidOrders,formatMoney(c.averageTicket),formatMoney(c.efectivo),formatMoney(c.tarjeta),formatMoney(c.transferencia),formatMoney(c.cortesia),c.canceledOrders])} />
-      <AdminOrdersTable title="Pedidos capturados del día" orders={data.orders} columns={[{ label: 'Hora', render: (o) => new Date(o.created_at).toLocaleTimeString('es-MX') }, { label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }, { label: 'Método de pago', render: (o) => paymentLabel(o.payment_method) }, { label: 'Tipo', render: (o) => o.order_type }, { label: 'Estado', render: (o) => <StatusBadge status={o.status} /> }, { label: 'Capturado por', render: (o) => capturedByName(o) }]} expandedId={expandedOrderId} setExpandedId={setExpandedOrderId} onSaved={() => load()} onCancel={cancelOrder} />
+      <AdminOrdersTable title="Pedidos del periodo" orders={data.orders} columns={[{ label: 'Hora', render: (o) => new Date(o.created_at).toLocaleTimeString('es-MX') }, { label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }, { label: 'Método de pago', render: (o) => paymentLabel(o.payment_method) }, { label: 'Tipo', render: (o) => o.order_type }, { label: 'Estado', render: (o) => <StatusBadge status={o.status} /> }, { label: 'Capturado por', render: (o) => capturedByName(o) }]} expandedId={expandedOrderId} setExpandedId={setExpandedOrderId} onSaved={() => load()} onCancel={cancelOrder} />
     </>}</>}</section>;
 }
 
@@ -1703,30 +1783,50 @@ const MM_TO_PT = 72 / 25.4;
 
 // A real top-level document lets Android print services capture the same page
 // shown in preview, even when they read it after window.print() returns.
-function printReceipt(order) {
-  if (!order) return;
+function openPrintDocument(content, title) {
   const key = `elpunto_receipt_${crypto.randomUUID()}`;
   const container = document.createElement('div');
   const root = createRoot(container);
   try {
-    // Render only the receipt into a detached container, never clone admin DOM.
-    flushSync(() => root.render(<ReceiptTicket order={order} />));
-    sessionStorage.setItem(key, JSON.stringify({
-      title: `Ticket ${order.order_number || ''}`,
-      markup: container.innerHTML
-    }));
-    // A new same-origin tab receives its own copy of sessionStorage. Keep the
-    // receipt there for reload/reprint; never transmit customer data in the URL.
+    flushSync(() => root.render(content));
+    sessionStorage.setItem(key, JSON.stringify({ title, markup: container.innerHTML }));
     const printWindow = window.open(`/receipt-print.html#${key}`, '_blank');
-    if (!printWindow) {
-      window.alert('Permite abrir ventanas emergentes para imprimir el ticket.');
-    }
+    if (!printWindow) window.alert('Permite abrir ventanas emergentes para imprimir.');
   } catch {
-    window.alert('No se pudo abrir el ticket para impresión. Revisa que el navegador permita el almacenamiento de sesión.');
-  } finally {
-    root.unmount();
-    sessionStorage.removeItem(key);
-  }
+    window.alert('No se pudo preparar la impresión. Revisa que el navegador permita el almacenamiento de sesión.');
+  } finally { root.unmount(); sessionStorage.removeItem(key); }
+}
+
+function printReceipt(order) {
+  if (order) openPrintDocument(<ReceiptTicket order={order} />, `Ticket ${order.order_number || ''}`);
+}
+
+function SalesCutTicket({ data, startDate, endDate }) {
+  const summary = data.summary || {};
+  const orders = [...(data.orders || [])].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  return <div className="receipt-ticket cut-ticket">
+    <header className="receipt-ticket__header"><strong>El Punto – Food To Go</strong><span>CORTE DE VENTAS</span><span>{startDate === endDate ? startDate : `${startDate} al ${endDate}`}</span><span>Zona horaria: Chihuahua</span><span>{orders.length} pedido(s)</span></header>
+    <div className="receipt-ticket__items">{orders.map((order) => <section className="cut-ticket__sale" key={order.id}>
+      <strong>{order.order_number}</strong>
+      <span>{new Date(order.created_at).toLocaleString('es-MX', { timeZone: 'America/Chihuahua', hour12: false })}</span>
+      <span>{order.customer_name || 'Cliente'} · {order.order_type}</span>
+      <span>{paymentLabel(order.payment_method)} · {order.status}</span>
+      {(order.admin_order_items || []).map((item) => <div className="cut-ticket__line" key={item.id}><span>{item.quantity}× {item.product_name}</span><b>{formatMoney(receiptLineTotal(item))}</b></div>)}
+      {Number(order.discount_total) > 0 && <span>Descuento: -{formatMoney(order.discount_total)}</span>}
+      <div className="cut-ticket__line"><strong>Total del pedido</strong><b>{formatMoney(order.total)}</b></div>
+      {order.status === 'cancelado' && <small>Cancelado: excluido de ventas y cobros.</small>}
+    </section>)}</div>
+    <div className="receipt-ticket__totals">
+      {[['Ventas totales',summary.salesTotal],['Pagos cobrados',summary.paymentsCollected],['Efectivo',summary.efectivo],['Tarjeta',summary.tarjeta],['Transferencia',summary.transferencia],['Plataformas pagadas',summary.platformPaid],['Plataformas pendientes',summary.platformPendingTotal],['Cortesías',summary.cortesia]].map(([label,value]) => <span key={label}>{label}<b>{formatMoney(value || 0)}</b></span>)}
+      <strong>Total cobrado<b>{formatMoney(summary.paymentsCollected || 0)}</b></strong>
+      <span>Pagados<b>{summary.paidOrders || 0}</b></span><span>Pendientes<b>{summary.pendingOrders || 0}</b></span><span>Cancelados<b>{summary.canceledOrders || 0}</b></span>
+    </div>
+    <footer>Fin del corte</footer>
+  </div>;
+}
+
+function printSalesCut(data, startDate, endDate) {
+  if (data) openPrintDocument(<SalesCutTicket data={data} startDate={startDate} endDate={endDate} />, `Corte ${startDate} al ${endDate}`);
 }
 
 function wrapPdfText(text, maxChars = 38) {
@@ -1865,13 +1965,24 @@ function downloadReceiptPdf(order) {
 function OrderAccordionRow({ order, columns, expanded, onToggle, onSaved, onCancel }) {
   const [editing, setEditing] = useState(false); const [saving, setSaving] = useState(false); const [message, setMessage] = useState('');
   const [phoneEditing, setPhoneEditing] = useState(false); const [phoneDraft, setPhoneDraft] = useState(order.customer_phone || ''); const [phoneStatus, setPhoneStatus] = useState('');
-  const toDraft = (o) => ({ customerName: o.customer_name || '', customerPhone: o.customer_phone || '', orderType: o.order_type || 'mostrador', paymentMethod: o.payment_method || 'efectivo', status: o.status || 'pagado', discountTotal: o.discount_total || 0, notes: o.notes || '', reason: '', items: (o.admin_order_items || []).map((item) => ({ key: item.id || createStableUuid(), productId: item.product_id, productName: item.product_name, quantity: item.quantity, unitPrice: item.unit_price, selectedOptionsText: selectedOptionsText(item.selected_options), selectedOptions: item.selected_options, itemNotes: item.item_notes || '' })) });
+  const toDraft = (o) => ({ expectedUpdatedAt: o.updated_at, customerName: o.customer_name || '', customerPhone: o.customer_phone || '', orderType: o.order_type || 'mostrador', paymentMethod: o.payment_method || 'efectivo', status: o.status || 'pagado', discountTotal: o.discount_total || 0, notes: o.notes || '', reason: '', items: (o.admin_order_items || []).map((item) => ({ key: item.id || createStableUuid(), productId: item.product_id, productName: item.product_name, quantity: item.quantity, unitPrice: item.unit_price, selectedOptionsText: selectedOptionsText(item.selected_options), selectedOptions: item.selected_options, itemNotes: item.item_notes || '' })) });
   const [draft, setDraft] = useState(() => toDraft(order));
-  useEffect(() => { setDraft(toDraft(order)); setEditing(false); setMessage(''); setPhoneDraft(order.customer_phone || ''); setPhoneEditing(false); setPhoneStatus(''); }, [order?.id]);
+  useEffect(() => { setDraft(toDraft(order)); setEditing(false); setMessage(''); setPhoneDraft(order.customer_phone || ''); setPhoneEditing(false); setPhoneStatus(''); }, [order]);
   const subtotal = draft.items.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unitPrice || 0), 0); const total = Math.max(0, subtotal - Number(draft.discountTotal || 0));
   const patchItem = (key, patch) => setDraft((current) => ({ ...current, items: current.items.map((item) => item.key === key ? { ...item, ...patch } : item) }));
   async function mark(action) { const verb = action === 'mark-paid' ? 'marcar como pagado' : 'revertir a pendiente'; if (!confirm(`¿Confirmas ${verb} este pedido?`)) return; setSaving(true); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', body: { id: order.id, action, reason: verb, editedBy: 'admin' } }); setMessage('Estado actualizado.'); onSaved?.(result.order); } catch (error) { setMessage(error.message); } finally { setSaving(false); } }
-  async function saveEdit() { if (!draft.reason.trim()) return setMessage('Escribe una razón del cambio.'); if (!draft.items.length) return setMessage('El ticket no puede quedar vacío.'); if (!confirm('¿Guardar cambios en este ticket sin duplicar el pedido?')) return; setSaving(true); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', body: { id: order.id, action: 'edit', ...draft, editedBy: 'admin' } }); setMessage('Ticket actualizado correctamente.'); onSaved?.(result.order); setEditing(false); } catch (error) { setMessage(error.message); } finally { setSaving(false); } }
+  async function saveEdit() {
+    if (saving) return;
+    if (!draft.items.length) return setMessage('El ticket no puede quedar vacío.');
+    if (draft.items.some((item) => !item.productName.trim() || !Number.isInteger(Number(item.quantity)) || Number(item.quantity) < 1 || !Number.isFinite(Number(item.unitPrice)) || Number(item.unitPrice) < 0)) return setMessage('Revisa nombres, cantidades y precios de los productos.');
+    if (!Number.isFinite(Number(draft.discountTotal)) || Number(draft.discountTotal) < 0 || Number(draft.discountTotal) > subtotal) return setMessage('El descuento debe estar entre cero y el subtotal.');
+    setSaving(true); setMessage('Guardando cambios...');
+    try {
+      const result = await adminRequest('admin-manual-orders', { method: 'PATCH', body: { id: order.id, action: 'edit', ...draft, reason: draft.reason.trim() || 'Edición de ticket desde el panel administrativo' } });
+      setDraft(toDraft(result.order)); setEditing(false); await onSaved?.(result.order); setMessage('Ticket actualizado correctamente.');
+    } catch (error) { setMessage(error.message); }
+    finally { setSaving(false); }
+  }
   async function savePhone() { const cleanPhone = String(phoneDraft || '').trim(); if (cleanPhone && !/^[+\d\s().-]{7,24}$/.test(cleanPhone)) return setPhoneStatus('Teléfono inválido. Usa dígitos, espacios y opcionalmente +.'); setSaving(true); setPhoneStatus('Guardando teléfono...'); try { const result = await adminRequest('admin-manual-orders', { method: 'PATCH', body: { id: order.id, action: 'update-phone', customerPhone: cleanPhone, reason: cleanPhone ? 'Actualización de teléfono del cliente' : 'Teléfono del cliente eliminado', editedBy: 'admin' } }); setPhoneStatus('Teléfono guardado.'); setPhoneEditing(false); onSaved?.(result.order); } catch (error) { setPhoneStatus(error.message); } finally { setSaving(false); } }
   const productRows = order.admin_order_items || [];
   const expandedContent = <div className="order-accordion"><div className="order-detail-grid"><section><h4>Encabezado</h4>{[order.order_number, order.created_at && new Date(order.created_at).toLocaleString('es-MX'), orderEdited(order) && 'Editado', order.status && `Estado: ${order.status}`, order.payment_method && `Pago: ${paymentLabel(order.payment_method)}`, platformText(order) && `Plataforma: ${platformText(order)}`].filter(Boolean).map((line) => <p key={line}>{line}</p>)}</section><section><h4>Cliente</h4>{[order.customer_name && `Nombre: ${order.customer_name}`, `Teléfono: ${order.customer_phone || 'No registrado'}`, order.order_type && `Entrega: ${order.order_type}`, order.delivery_address && `Dirección: ${order.delivery_address}`].filter(Boolean).map((line) => <p key={line}>{line}</p>)}<div className="phone-inline-editor">{phoneEditing ? <><input type="tel" inputMode="tel" autoComplete="tel" placeholder="614 123 4567" value={phoneDraft} onChange={(event) => setPhoneDraft(event.target.value)} disabled={saving} /><button type="button" onClick={savePhone} disabled={saving}>{saving ? 'Guardando...' : 'Guardar'}</button><button type="button" className="button--ghost" onClick={() => { setPhoneDraft(order.customer_phone || ''); setPhoneEditing(false); setPhoneStatus(''); }} disabled={saving}>Cancelar</button></> : <button type="button" className="button--ghost" onClick={() => setPhoneEditing(true)}>{order.customer_phone ? 'Editar teléfono' : 'Agregar teléfono'}</button>}{phoneStatus && <small>{phoneStatus}</small>}</div></section></div>
@@ -1879,8 +1990,8 @@ function OrderAccordionRow({ order, columns, expanded, onToggle, onSaved, onCanc
     <section className="order-detail-totals"><span>Subtotal: <b>{formatMoney(order.subtotal || order.total)}</b></span>{Number(order.discount_total || 0) > 0 && <span>Descuento: <b>{formatMoney(order.discount_total)}</b></span>}<strong>Total final: {formatMoney(order.total)}</strong></section>
     <section className="order-detail-extra">{[order.notes && `Notas: ${order.notes}`, `Capturó: ${capturedByName(order)}`, order.paid_at && `Pagado: ${new Date(order.paid_at).toLocaleString('es-MX')}`, latestEditReason(order) && `Edición: ${latestEditReason(order)}`].filter(Boolean).map((line) => <p key={line}>{line}</p>)}</section>
     <details className="receipt-preview"><summary>Vista previa de ticket</summary><ReceiptTicket order={order} /></details>
-    {editing && <div className="ticket-edit-form"><div className="form-grid"><input placeholder="Cliente" value={draft.customerName} onChange={(e) => setDraft({ ...draft, customerName: e.target.value })} /><input type="tel" inputMode="tel" autoComplete="tel" placeholder="Teléfono" value={draft.customerPhone} onChange={(e) => setDraft({ ...draft, customerPhone: e.target.value })} /><select value={draft.paymentMethod} onChange={(e) => setDraft({ ...draft, paymentMethod: e.target.value, status: e.target.value === 'plataformas' && draft.status !== 'pagado' ? 'pendiente' : draft.status })}>{ADMIN_PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</select><select value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value })}>{['pendiente','pagado','cancelado'].map((v) => <option key={v}>{v}</option>)}</select><input type="number" step="0.01" placeholder="Descuento" value={draft.discountTotal} onChange={(e) => setDraft({ ...draft, discountTotal: e.target.value })} /></div>{draft.items.map((item) => <div className="ticket-edit-line" key={item.key}><input value={item.productName} onChange={(e) => patchItem(item.key, { productName: e.target.value })} /><input type="number" min="1" value={item.quantity} onChange={(e) => patchItem(item.key, { quantity: Math.max(1, Number(e.target.value) || 1) })} /><input type="number" step="0.01" value={item.unitPrice} onChange={(e) => patchItem(item.key, { unitPrice: Number(e.target.value) || 0 })} /><input placeholder="Opciones/variantes" value={item.selectedOptionsText || ''} onChange={(e) => patchItem(item.key, { selectedOptionsText: e.target.value, selectedOptions: [{ name: e.target.value }] })} /><button className="button--danger" onClick={() => setDraft({ ...draft, items: draft.items.filter((row) => row.key !== item.key) })}>Quitar</button></div>)}<button className="button--ghost" onClick={() => setDraft({ ...draft, items: [...draft.items, { key: createStableUuid(), productName: '', quantity: 1, unitPrice: 0, selectedOptions: [], selectedOptionsText: '', itemNotes: '' }] })}>Agregar producto</button><textarea placeholder="Notas del pedido" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} /><textarea required placeholder="Razón breve del cambio *" value={draft.reason} onChange={(e) => setDraft({ ...draft, reason: e.target.value })} /><p><strong>Subtotal:</strong> {formatMoney(subtotal)} · <strong>Total:</strong> {formatMoney(total)}</p><button onClick={saveEdit} disabled={saving}>{saving ? 'Guardando...' : 'Guardar cambios'}</button></div>}
-    <div className="order-detail-actions"><button className="button--ghost" onClick={() => setEditing(!editing)} disabled={saving}>{editing ? 'Cancelar edición' : 'Editar ticket'}</button><button onClick={() => printReceipt(order)}>Imprimir ticket</button><button className="button--ghost" onClick={() => downloadReceiptPdf(order)}>Descargar PDF</button>{order.payment_method === 'plataformas' && order.status !== 'pagado' && <button onClick={() => mark('mark-paid')} disabled={saving}>Marcar como pagado</button>}{order.payment_method === 'plataformas' && order.status === 'pagado' && <button className="button--ghost" onClick={() => mark('mark-pending')} disabled={saving}>Revertir a pendiente</button>}{order.status !== 'cancelado' && <button className="button--danger" onClick={() => onCancel(order.id)}>Cancelar pedido</button>}<button className="button--ghost" onClick={onToggle}>Cerrar detalle</button></div>{message && <p className="small-note">{message}</p>}</div>;
+    {editing && <div className="ticket-edit-form"><div className="form-grid"><input placeholder="Cliente" value={draft.customerName} onChange={(e) => setDraft({ ...draft, customerName: e.target.value })} /><input type="tel" inputMode="tel" autoComplete="tel" placeholder="Teléfono" value={draft.customerPhone} onChange={(e) => setDraft({ ...draft, customerPhone: e.target.value })} /><select value={draft.paymentMethod} onChange={(e) => setDraft({ ...draft, paymentMethod: e.target.value, status: e.target.value === 'plataformas' && draft.status !== 'pagado' ? 'pendiente' : draft.status })}>{ADMIN_PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</select><select value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value })}>{['pendiente','pagado','cancelado'].map((v) => <option key={v}>{v}</option>)}</select><input type="number" step="0.01" min="0" max={subtotal} placeholder="Descuento" value={draft.discountTotal} onChange={(e) => setDraft({ ...draft, discountTotal: e.target.value })} /></div>{draft.items.map((item) => <div className="ticket-edit-line" key={item.key}><input value={item.productName} onChange={(e) => patchItem(item.key, { productName: e.target.value })} /><input type="number" min="1" value={item.quantity} onChange={(e) => patchItem(item.key, { quantity: Math.max(1, Number(e.target.value) || 1) })} /><input type="number" step="0.01" min="0" value={item.unitPrice} onChange={(e) => patchItem(item.key, { unitPrice: Number(e.target.value) || 0 })} /><input placeholder="Opciones/variantes" value={item.selectedOptionsText || ''} onChange={(e) => patchItem(item.key, { selectedOptionsText: e.target.value, selectedOptions: [{ name: e.target.value }] })} /><button className="button--danger" onClick={() => setDraft({ ...draft, items: draft.items.filter((row) => row.key !== item.key) })}>Quitar</button></div>)}<button className="button--ghost" onClick={() => setDraft({ ...draft, items: [...draft.items, { key: createStableUuid(), productName: '', quantity: 1, unitPrice: 0, selectedOptions: [], selectedOptionsText: '', itemNotes: '' }] })}>Agregar producto</button><textarea placeholder="Notas del pedido" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} /><textarea placeholder="Motivo del cambio (opcional)" value={draft.reason} onChange={(e) => setDraft({ ...draft, reason: e.target.value })} /><p><strong>Subtotal:</strong> {formatMoney(subtotal)} · <strong>Total:</strong> {formatMoney(total)}</p><p role="status">{message}</p><button type="button" onClick={saveEdit} disabled={saving}>{saving ? 'Guardando...' : 'Guardar cambios'}</button></div>}
+    <div className="order-detail-actions"><button className="button--ghost" onClick={() => { setDraft(toDraft(order)); setMessage(''); setEditing(!editing); }} disabled={saving}>{editing ? 'Cancelar edición' : 'Editar ticket'}</button><button onClick={() => printReceipt(order)}>Imprimir ticket</button><button className="button--ghost" onClick={() => downloadReceiptPdf(order)}>Descargar PDF</button>{order.payment_method === 'plataformas' && order.status !== 'pagado' && <button onClick={() => mark('mark-paid')} disabled={saving}>Marcar como pagado</button>}{order.payment_method === 'plataformas' && order.status === 'pagado' && <button className="button--ghost" onClick={() => mark('mark-pending')} disabled={saving}>Revertir a pendiente</button>}{order.status !== 'cancelado' && <button className="button--danger" onClick={() => onCancel(order.id)}>Cancelar pedido</button>}<button className="button--ghost" onClick={onToggle}>Cerrar detalle</button></div>{message && <p className="small-note">{message}</p>}</div>;
   return <React.Fragment><tr className={expanded ? 'order-row order-row--expanded' : 'order-row'}>{columns.map((column) => <td key={column.label} data-label={column.label}>{column.render(order)}</td>)}<td data-label="Detalle"><button className="button--ghost" onClick={(event) => { event.stopPropagation(); onToggle(); }}>{expanded ? 'Ocultar detalle ▲' : 'Ver detalle ▼'}</button></td></tr>{expanded && <tr className="order-detail-row"><td colSpan={columns.length + 1}>{expandedContent}</td></tr>}</React.Fragment>;
 }
 
@@ -1919,25 +2030,29 @@ const salesTotalValue = (row = {}) => row.salesTotal ?? (Number(row.totalSold ||
 
 function SalesHistory({ onBack }) {
   const [preset, setPreset] = useState('today'); const [range, setRange] = useState(() => historyPresetRange('today')); const [groupBy, setGroupBy] = useState('day');
+  const [loading, setLoading] = useState(false); const requestId = useRef(0);
   const [data, setData] = useState(null); const [status, setStatus] = useState(''); const [expandedOrderId, setExpandedOrderId] = useState(null);
+  const currentData = !!data && !loading && data.startDate === range.startDate && data.endDate === range.endDate && data.groupBy === groupBy;
   async function load(nextRange = range, nextGroupBy = groupBy) {
+    const current = ++requestId.current; setLoading(true);
     try {
       setStatus('Cargando histórico...');
-      const end = new Date(`${nextRange.endDate}T12:00:00-06:00`); end.setDate(end.getDate() + 1);
-      const result = await adminRequest('admin-sales-history', { method: 'GET', body: { startDate: `${nextRange.startDate}T00:00:00-06:00`, endDate: end.toISOString(), groupBy: nextGroupBy } });
-      setData(result); setStatus(result.orders.length ? 'Histórico actualizado.' : 'No hay ventas en este periodo');
-    } catch (error) { setStatus(error.message); }
+      const result = await adminRequest('admin-sales-history', { method: 'GET', body: { ...salesDateRange(nextRange.startDate, nextRange.endDate), groupBy: nextGroupBy } });
+      if (current !== requestId.current) return;
+      setData({ ...result, ...nextRange, groupBy: nextGroupBy }); setStatus(result.orders.length ? 'Histórico actualizado.' : 'No hay ventas en este periodo');
+    } catch (error) { if (current === requestId.current) { setData(null); setStatus(error.message); } }
+    finally { if (current === requestId.current) setLoading(false); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); return () => { ++requestId.current; }; }, []);
   function applyPreset(value) { setPreset(value); const next = historyPresetRange(value); setRange(next); load(next, groupBy); }
   function exportCsv() {
-    if (!data) return; const lines = [['Resumen'], ...Object.entries(data.summary).map(([k, v]) => [k, v]), [], ['Ventas agrupadas'], ['Periodo','Total vendido','Efectivo','Tarjeta','Transferencia','Cortesías','Pedidos pagados','Pedidos cancelados','Ticket promedio'], ...data.grouped.map((r) => [r.period,salesTotalValue(r),r.efectivo,r.tarjeta,r.transferencia,r.cortesia,r.paidOrders,r.canceledOrders,r.averageTicket]), [], ['Pedidos'], ['Fecha','Folio','Cliente','Total','Pago','Tipo','Estado','Capturado por'], ...data.orders.map((o) => [o.created_at,o.order_number,o.customer_name,o.total,o.payment_method,o.order_type,o.status,capturedByName(o)]), [], ['Productos'], ['Producto','Cantidad','Total vendido','Ticket promedio','Cortesías'], ...data.products.map((p) => [p.product,p.quantity,salesTotalValue(p),p.averageTicket,p.courtesies]), [], ['Capturistas'], ['Capturista','Total','Pedidos','Ticket','Efectivo','Tarjeta','Transferencia','Cortesías','Cancelados'], ...data.capturers.map((c) => [c.capturedBy,salesTotalValue(c),c.paidOrders,c.averageTicket,c.efectivo,c.tarjeta,c.transferencia,c.cortesia,c.canceledOrders])];
+    if (!currentData) return; const lines = [['Resumen'], ...Object.entries(data.summary).map(([k, v]) => [k, v]), [], ['Ventas agrupadas'], ['Periodo','Total vendido','Efectivo','Tarjeta','Transferencia','Cortesías','Pedidos pagados','Pedidos cancelados','Ticket promedio'], ...data.grouped.map((r) => [r.period,salesTotalValue(r),r.efectivo,r.tarjeta,r.transferencia,r.cortesia,r.paidOrders,r.canceledOrders,r.averageTicket]), [], ['Pedidos'], ['Fecha','Folio','Cliente','Total','Pago','Tipo','Estado','Capturado por'], ...data.orders.map((o) => [o.created_at,o.order_number,o.customer_name,o.total,o.payment_method,o.order_type,o.status,capturedByName(o)]), [], ['Productos'], ['Producto','Cantidad','Total vendido','Ticket promedio','Cortesías'], ...data.products.map((p) => [p.product,p.quantity,salesTotalValue(p),p.averageTicket,p.courtesies]), [], ['Capturistas'], ['Capturista','Total','Pedidos','Ticket','Efectivo','Tarjeta','Transferencia','Cortesías','Cancelados'], ...data.capturers.map((c) => [c.capturedBy,salesTotalValue(c),c.paidOrders,c.averageTicket,c.efectivo,c.tarjeta,c.transferencia,c.cortesia,c.canceledOrders])];
     const blob = new Blob([lines.map((row) => row.map(csvEscape).join(',')).join('\n')], { type: 'text/csv;charset=utf-8' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `historico-ventas-${range.startDate}-${range.endDate}.csv`; a.click(); URL.revokeObjectURL(url);
   }
   async function cancelOrder(id) { if (!confirm('¿Cancelar este pedido sin eliminarlo?')) return; try { await adminRequest('admin-manual-orders', { method: 'PATCH', body: { id, status: 'cancelado' } }); load(); } catch (error) { setStatus(error.message); } }
   const summary = data?.summary || {};
-  return <section className="section sales-history"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Histórico de ventas</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button onClick={exportCsv}>Exportar CSV</button></div></div>
-    <div className="panel history-filters"><div className="admin-actions">{[['today','Hoy'],['yesterday','Ayer'],['thisWeek','Esta semana'],['lastWeek','Semana pasada'],['thisMonth','Este mes'],['lastMonth','Mes pasado'],['thisYear','Este año'],['lastYear','Año pasado']].map(([v,l]) => <button key={v} className={preset === v ? '' : 'button--ghost'} onClick={() => applyPreset(v)}>{l}</button>)}</div><div className="admin-actions"><label>Desde <input type="date" value={range.startDate} onChange={(e) => { setPreset('custom'); setRange({ ...range, startDate: e.target.value }); }} /></label><label>Hasta <input type="date" value={range.endDate} onChange={(e) => { setPreset('custom'); setRange({ ...range, endDate: e.target.value }); }} /></label><select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); load(range, e.target.value); }}><option value="day">Por día</option><option value="week">Por semana</option><option value="month">Por mes</option><option value="year">Por año</option></select><button onClick={() => load()}>Consultar</button></div><p className="small-note">{status}. Zona horaria: Chihuahua/México.</p></div>
+  return <section className="section sales-history"><div className="admin-header"><div><p className="eyebrow">Admin</p><h2>Histórico de ventas</h2></div><div className="admin-actions"><button className="button--ghost" onClick={onBack}>Volver</button><button type="button" disabled={!currentData} onClick={() => printSalesCut(data, range.startDate, range.endDate)}>Imprimir corte</button><button type="button" disabled={!currentData} onClick={exportCsv}>Exportar CSV</button></div></div>
+    <div className="panel history-filters"><div className="admin-actions">{[['today','Hoy'],['yesterday','Ayer'],['thisWeek','Esta semana'],['lastWeek','Semana pasada'],['thisMonth','Este mes'],['lastMonth','Mes pasado'],['thisYear','Este año'],['lastYear','Año pasado']].map(([v,l]) => <button key={v} className={preset === v ? '' : 'button--ghost'} onClick={() => applyPreset(v)}>{l}</button>)}</div><div className="admin-actions"><label>Desde <input type="date" value={range.startDate} onChange={(e) => { setPreset('custom'); setRange({ ...range, startDate: e.target.value }); }} /></label><label>Hasta <input type="date" value={range.endDate} onChange={(e) => { setPreset('custom'); setRange({ ...range, endDate: e.target.value }); }} /></label><select value={groupBy} onChange={(e) => { setGroupBy(e.target.value); load(range, e.target.value); }}><option value="day">Por día</option><option value="week">Por semana</option><option value="month">Por mes</option><option value="year">Por año</option></select><button type="button" disabled={loading} onClick={() => load()}>{loading ? 'Consultando...' : 'Consultar'}</button></div><p className="small-note">{status}. Zona horaria: Chihuahua/México.</p></div>
     {data && <><PendingPlatformsCard summary={summary} onShowDetail={() => setExpandedOrderId((data.orders || []).find((o) => o.payment_method === 'plataformas' && o.status === 'pendiente')?.id || null)} /><div className="metric-grid history-summary">{[['Total vendido','salesTotal'],['Pagos cobrados','paymentsCollected'],['Pagos pendientes de plataformas','platformPendingTotal'],['Total efectivo','efectivo'],['Total tarjeta','tarjeta'],['Total transferencia','transferencia'],['Plataformas pagadas','platformPaid'],['Plataformas pendientes','platformPending'],['Cortesías','cortesia'],['Pedidos pagados','paidOrders'],['Pedidos pendientes','pendingOrders'],['Pedidos cancelados','canceledOrders'],['Ticket promedio','averageTicket'],['Número total de pedidos','totalOrders'],['Total por domicilio','domicilio'],['Total mostrador','mostrador'],['Total recoger','recoger']].map(([label,key]) => <Metric key={key} label={label} value={String(key).includes('Orders') || key === 'totalOrders' ? summary[key] : formatMoney(summary[key])} />)}</div>{data.orders.length === 0 ? <div className="panel">No hay ventas en este periodo</div> : <>
       <HistoryTable title="Ventas agrupadas" headers={['Periodo','Total vendido','Efectivo','Tarjeta','Transferencia','Cortesías','Pagados','Cancelados','Ticket']} rows={data.grouped.map((r) => [r.period,formatMoney(salesTotalValue(r)),formatMoney(r.efectivo),formatMoney(r.tarjeta),formatMoney(r.transferencia),formatMoney(r.cortesia),r.paidOrders,r.canceledOrders,formatMoney(r.averageTicket)])} />
       <AdminOrdersTable title="Histórico de pedidos" orders={data.orders} columns={[{ label: 'Fecha y hora', render: (o) => new Date(o.created_at).toLocaleString('es-MX') }, { label: 'Folio', render: (o) => o.order_number }, { label: 'Cliente', render: (o) => o.customer_name || '—' }, { label: 'Total', render: (o) => formatMoney(o.total) }, { label: 'Pago', render: (o) => paymentLabel(o.payment_method) }, { label: 'Tipo', render: (o) => o.order_type }, { label: 'Estado', render: (o) => <StatusBadge status={o.status} /> }, { label: 'Capturado por', render: (o) => capturedByName(o) }]} expandedId={expandedOrderId} setExpandedId={setExpandedOrderId} onSaved={() => load()} onCancel={cancelOrder} />
@@ -2068,7 +2183,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
 
 
   async function loadPlatformSummary() {
-    try { const today = dateInputFromParts(...chihuahuaDateParts()); const end = new Date(`${today}T12:00:00-06:00`); end.setDate(end.getDate() + 1); const result = await adminRequest('admin-sales-history', { method: 'GET', body: { startDate: `${today}T00:00:00-06:00`, endDate: end.toISOString(), groupBy: 'day' } }); setPlatformSummary(result.summary || null); } catch { setPlatformSummary(null); }
+    try { const today = dateInputFromParts(...chihuahuaDateParts()); const result = await adminRequest('admin-sales-history', { method: 'GET', body: { ...salesDateRange(today), groupBy: 'day' } }); setPlatformSummary(result.summary || null); } catch { setPlatformSummary(null); }
   }
 
   async function loadOrders() {
@@ -2423,16 +2538,15 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
         </form>
         <div className="panel narrow admin-update-summary">
           <strong>Actualizaciones</strong>
-          <p>Se eliminó la página de inicio anterior. El menú “Arma tu pedido” ahora es la página principal del sitio.</p>
-          <p>Se corrigió la carga y eliminación de imágenes de productos en el Admin.</p>
+          <p>Ya puedes guardar cambios en tickets, elegir combos y quitar ingredientes al capturar pedidos.</p>
+          <p>Los pedidos del portal llegan al panel para confirmar e imprimir. El corte se puede imprimir por fecha o rango.</p>
         </div>
         <div className="panel narrow admin-update-summary">
-          <strong>Resumen de actualización (Codex)</strong>
+          <strong>Actualizaciones del panel</strong>
           <ul>
-            <li>La raíz <code>/</code> abre directamente el menú.</li>
-            <li>La ruta anterior <code>/menu</code> redirige a la página principal.</li>
-            <li>El logo y la navegación pública regresan al menú principal.</li>
-            <li>Se eliminaron las llamadas obsoletas al helper anterior de encabezados administrativos; <code>ProductImageManager</code> ahora utiliza el helper centralizado <code>adminRequest()</code>.</li>
+            <li>Confirmación de pedidos del portal con método y estado de pago.</li>
+            <li>Tickets editables con productos, precios, cantidades y notas.</li>
+            <li>Impresión de corte con las ventas de las fechas consultadas.</li>
           </ul>
         </div>
       </section>
@@ -2514,48 +2628,7 @@ function AdminSection({ menu, setMenu, business, setBusiness, productImages, ref
       </div>
 
 
-      <div className="panel admin-full">
-        <div className="admin-header">
-          <div>
-            <p className="eyebrow">Órdenes</p>
-            <h2>Órdenes recientes</h2>
-          </div>
-          <button type="button" className="button--ghost" onClick={loadOrders}>Actualizar órdenes</button>
-        </div>
-        <p className="small-note">{ordersStatus || 'Las órdenes se crean desde Stripe Checkout y se actualizan por webhook.'}</p>
-        <div className="orders-table-wrap">
-          <table className="orders-table">
-            <thead>
-              <tr>
-                <th>Orden</th>
-                <th>Cliente</th>
-                <th>Teléfono</th>
-                <th>Total</th>
-                <th>Pago</th>
-                <th>Estado pago</th>
-                <th>Estado orden</th>
-                <th>Fecha</th>
-              </tr>
-            </thead>
-            <tbody>
-              {orders.length === 0 ? (
-                <tr><td colSpan="8">Sin órdenes todavía.</td></tr>
-              ) : orders.map((order) => (
-                <tr key={order.id}>
-                  <td>{order.order_number}</td>
-                  <td>{order.customer_name || 'Cliente'}</td>
-                  <td>{order.customer_phone || '—'}</td>
-                  <td>{formatMoney(order.total)}</td>
-                  <td>{paymentLabel(order.payment_method)}</td>
-                  <td>{order.payment_status}</td>
-                  <td>{order.order_status}</td>
-                  <td>{order.created_at ? new Date(order.created_at).toLocaleString('es-MX') : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <PortalInbox onConfirmed={async () => { await loadOrders(); await loadPlatformSummary(); }} />
 
       <div className="panel admin-full">
         <div className="admin-header">
@@ -3151,3 +3224,4 @@ function Footer({ business }) {
 }
 
 createRoot(document.getElementById('root')).render(<App />);
+

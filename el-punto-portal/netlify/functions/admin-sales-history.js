@@ -34,10 +34,17 @@ export async function handler(event) {
     const admin = await requireAdmin(event); if (isAuthError(admin)) return json(admin.statusCode, admin.body);
     const qs = event.queryStringParameters || {}; if (!qs.startDate || !qs.endDate) return json(400, { error: 'Fechas requeridas.' });
     const supabase = getSupabaseAdmin();
-    let query = supabase.from('admin_orders').select('*, admin_order_items(*), order_edit_history(id, reason, edited_by, created_at)').gte('created_at', qs.startDate).lt('created_at', qs.endDate).order('created_at', { ascending: false }).limit(5000);
-    if (qs.status) query = query.eq('status', qs.status); if (qs.paymentMethod) query = query.eq('payment_method', qs.paymentMethod);
-    const { data, error } = await query; if (error) throw error;
-    const orders = data || []; const summary = emptyStats(); const grouped = new Map(); const productMap = new Map(); const capturerMap = new Map();
+    const start = new Date(qs.startDate), end = new Date(qs.endDate);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start >= end) return json(400, { error: 'Rango de fechas inválido.' });
+    const orders = [];
+    for (let offset = 0; ; offset += 500) {
+      let query = supabase.from('admin_orders').select('*, admin_order_items(*), order_edit_history(id, reason, edited_by, created_at)').gte('created_at', qs.startDate).lt('created_at', qs.endDate).order('created_at', { ascending: false }).order('id', { ascending: false }).range(offset, offset + 499);
+      if (qs.status) query = query.eq('status', qs.status); if (qs.paymentMethod) query = query.eq('payment_method', qs.paymentMethod);
+      const { data, error } = await query; if (error) throw error;
+      orders.push(...(data || []));
+      if ((data || []).length < 500) break;
+    }
+    const summary = emptyStats(); const grouped = new Map(); const productMap = new Map(); const capturerMap = new Map();
     orders.forEach((order) => {
       addOrder(summary, order); const key = periodKey(order.created_at, qs.groupBy || 'day'); if (!grouped.has(key)) grouped.set(key, { period: key, ...emptyStats() }); addOrder(grouped.get(key), order);
       const collected = isCollected(order); const salesTotalOrder = isSalesTotalOrder(order); const courtesy = isActiveSale(order) && order.payment_method === 'cortesia'; if (!isActiveSale(order)) return;
@@ -47,3 +54,4 @@ export async function handler(event) {
     return json(200, { timezone: TZ, summary: sanitize(summary), grouped: [...grouped.values()].sort((a,b) => a.period.localeCompare(b.period)).map(sanitize), orders, products: [...productMap.values()].sort((a,b) => b.quantity - a.quantity).map(sanitize), capturers: [...capturerMap.values()].sort((a,b) => b.salesTotal - a.salesTotal).map(sanitize) });
   } catch (error) { return json(500, { error: error.message || 'Error inesperado en histórico.' }); }
 }
+

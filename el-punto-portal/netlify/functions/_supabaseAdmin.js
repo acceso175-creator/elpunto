@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { loadOptionCatalog } from './_shared/productOptions.js';
 
 export function json(statusCode, body) {
   return {
@@ -61,32 +62,19 @@ export async function ensureCategory(supabase, category) {
 async function loadProductRelations(supabase, products) {
   const productIds = products.map((product) => product.id).filter(Boolean);
   if (!productIds.length) return products;
-  const [ingredientsResult, imagesResult, groupsResult] = await Promise.all([
+  const [ingredients, images, catalog] = await Promise.all([
     supabase.from('product_ingredients').select('id, product_id, name, removable, sort_order').in('product_id', productIds),
     supabase.from('product_images').select('id, product_id, image_url, storage_path, sort_order').in('product_id', productIds),
-    supabase.from('product_option_groups').select('id, product_id, name, required, selection_type, min_select, max_select, sort_order, is_active').in('product_id', productIds).order('sort_order', { ascending: true })
+    loadOptionCatalog(supabase, productIds, { activeOnly: false })
   ]);
-  const groups = groupsResult.error ? [] : groupsResult.data || [];
-  const groupIds = groups.map((group) => group.id);
-  const optionsResult = groupIds.length
-    ? await supabase.from('product_options').select('id, group_id, name, price_delta, is_active, sort_order').in('group_id', groupIds).order('sort_order', { ascending: true })
-    : { data: [], error: null };
-  if (ingredientsResult.error) console.error('[admin products] product_ingredients', supabaseErrorDetails(ingredientsResult.error));
-  if (imagesResult.error) console.error('[admin products] product_images', supabaseErrorDetails(imagesResult.error));
-  if (groupsResult.error) console.error('[admin products] product_option_groups', supabaseErrorDetails(groupsResult.error));
-  if (optionsResult.error) console.error('[admin products] product_options', supabaseErrorDetails(optionsResult.error));
-  const byProduct = (rows) => rows.reduce((map, row) => map.set(row.product_id, [...(map.get(row.product_id) || []), row]), new Map());
-  const ingredientsByProduct = byProduct(ingredientsResult.error ? [] : ingredientsResult.data || []);
-  const imagesByProduct = byProduct(imagesResult.error ? [] : imagesResult.data || []);
-  const groupsByProduct = byProduct(groupsResult.error || optionsResult.error ? [] : groups);
-  const optionsByGroup = new Map();
-  (groupsResult.error || optionsResult.error ? [] : optionsResult.data || []).forEach((option) => optionsByGroup.set(option.group_id, [...(optionsByGroup.get(option.group_id) || []), option]));
+  if (ingredients.error) throw ingredients.error;
+  if (images.error) throw images.error;
   return products.map((product) => ({
     ...product,
-    product_ingredients: ingredientsByProduct.get(product.id) || [],
-    product_images: imagesByProduct.get(product.id) || [],
-    option_groups_loaded: !groupsResult.error && !optionsResult.error,
-    product_option_groups: (groupsByProduct.get(product.id) || []).map((group) => ({ ...group, product_options: optionsByGroup.get(group.id) || [] }))
+    product_ingredients: (ingredients.data || []).filter((row) => row.product_id === product.id),
+    product_images: (images.data || []).filter((row) => row.product_id === product.id),
+    option_groups_loaded: true,
+    product_option_groups: catalog.groups.filter((group) => group.product_id === product.id).map((group) => ({ ...group, product_options: catalog.options.filter((option) => option.group_id === group.id) }))
   }));
 }
 
@@ -109,3 +97,4 @@ export async function menuSnapshot(supabase, includeUnavailable = true) {
   if (productsError) throw new Error(productsError.message);
   return { categories: categories || [], products: await loadProductRelations(supabase, products || []) };
 }
+
