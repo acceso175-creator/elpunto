@@ -1,3 +1,4 @@
+import { saveOrderEdit } from './_shared/orderEdits.js';
 import { isAuthError, requireAdmin } from './_shared/requireAdmin.js';
 import { getSupabaseAdmin, json, parseBody } from './_supabaseAdmin.js';
 const TYPES = ['mostrador', 'domicilio', 'recoger'];
@@ -7,9 +8,9 @@ const money = (value) => Math.round(Number(value || 0) * 100) / 100;
 const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i.test(String(value || ''));
 const normalizeItems = (items = []) => items.map((item) => {
   const quantity = Number(item.quantity); const unitPrice = money(item.unitPrice ?? item.unit_price);
-  if (!Number.isInteger(quantity) || quantity < 1 || unitPrice < 0) throw new Error('Cantidad o precio inválido.');
+  if (!Number.isInteger(quantity) || quantity < 1 || !Number.isFinite(unitPrice) || unitPrice < 0) throw Object.assign(new Error('Cantidad o precio inválido.'), { statusCode: 400 });
   const productName = String(item.productName || item.product_name || '').trim();
-  if (!productName) throw new Error('Cada producto necesita nombre.');
+  if (!productName) throw Object.assign(new Error('Cada producto necesita nombre.'), { statusCode: 400 });
   return { product_id: isUuid(item.productId || item.product_id) ? (item.productId || item.product_id) : null, product_name: productName, quantity, unit_price: unitPrice, total_price: money(quantity * unitPrice), selected_options: item.selectedOptions ?? item.selected_options ?? null, item_notes: item.itemNotes ?? item.item_notes ?? null };
 });
 const orderSnapshot = (order) => order ? { ...order, admin_order_items: order.admin_order_items || [] } : null;
@@ -22,7 +23,7 @@ async function recordHistory(supabase, orderId, previousData, newData, reason, e
   const { error } = await supabase.from('order_edit_history').insert({ order_id: orderId, previous_data: previousData, new_data: newData, reason: String(reason || '').trim(), edited_by: String(editedBy || 'admin').trim() || 'admin' });
   if (error) console.error('[order_edit_history]', error.message || error);
 }
-async function insertManualOrder(supabase, orderPayload) {
+export async function insertManualOrder(supabase, orderPayload) {
   const payload = { ...orderPayload };
   // PGRST204 rejects the request before insertion. Only retry missing optional
   // capture fields; captured_by always keeps the authenticated admin's name.
@@ -51,45 +52,47 @@ export async function handler(event) {
     if (event.httpMethod === 'PATCH') {
       if (!body.id) return json(400, { error: 'Falta id de pedido.' });
       const previous = await fetchOrder(supabase, body.id);
+      const editedBy = admin.displayName || admin.email || 'admin';
+      if (body.expectedUpdatedAt && body.expectedUpdatedAt !== previous.updated_at) return json(409, { error: 'Este ticket cambió desde que lo abriste. Actualiza la lista antes de editarlo.' });
       if (body.action === 'mark-paid' || body.action === 'mark-pending') {
         if (previous.payment_method !== 'plataformas') return json(400, { error: 'Solo pedidos de plataformas pueden cambiar pago pendiente/pagado.' });
         const nextStatus = body.action === 'mark-paid' ? 'pagado' : 'pendiente';
-        const patch = { status: nextStatus, paid_at: nextStatus === 'pagado' ? new Date().toISOString() : null, updated_by: body.editedBy || 'admin' };
+        const patch = { status: nextStatus, paid_at: nextStatus === 'pagado' ? new Date().toISOString() : null, updated_by: editedBy };
         const { error } = await supabase.from('admin_orders').update(patch).eq('id', body.id); if (error) throw error;
-        const next = await fetchOrder(supabase, body.id); await recordHistory(supabase, body.id, orderSnapshot(previous), orderSnapshot(next), body.reason || (nextStatus === 'pagado' ? 'Marcado como pagado' : 'Revertido a pendiente'), body.editedBy || 'admin');
+        const next = await fetchOrder(supabase, body.id); await recordHistory(supabase, body.id, orderSnapshot(previous), orderSnapshot(next), body.reason || (nextStatus === 'pagado' ? 'Marcado como pagado' : 'Revertido a pendiente'), editedBy);
         return json(200, { order: next });
       }
 
       if (body.action === 'update-phone') {
         const cleanPhone = String(body.customerPhone || '').trim();
         if (cleanPhone && !/^[+\d\s().-]{7,24}$/.test(cleanPhone)) return json(400, { error: 'Teléfono inválido. Usa dígitos, espacios y opcionalmente +.' });
-        const { error } = await supabase.from('admin_orders').update({ customer_phone: cleanPhone || null, updated_by: body.editedBy || 'admin' }).eq('id', body.id); if (error) throw error;
-        const next = await fetchOrder(supabase, body.id); await recordHistory(supabase, body.id, orderSnapshot(previous), orderSnapshot(next), body.reason || 'Actualización de teléfono del cliente', body.editedBy || 'admin');
+        const { error } = await supabase.from('admin_orders').update({ customer_phone: cleanPhone || null, updated_by: editedBy }).eq('id', body.id); if (error) throw error;
+        const next = await fetchOrder(supabase, body.id); await recordHistory(supabase, body.id, orderSnapshot(previous), orderSnapshot(next), body.reason || 'Actualización de teléfono del cliente', editedBy);
         return json(200, { order: next });
       }
-      if (body.status === 'cancelado') {
-        const { error } = await supabase.from('admin_orders').update({ status: 'cancelado', updated_by: body.editedBy || 'admin' }).eq('id', body.id); if (error) throw error;
-        const next = await fetchOrder(supabase, body.id); await recordHistory(supabase, body.id, orderSnapshot(previous), orderSnapshot(next), body.reason || 'Cancelación de pedido', body.editedBy || 'admin');
+      if (body.status === 'cancelado' && body.action !== 'edit') {
+        const { error } = await supabase.from('admin_orders').update({ status: 'cancelado', updated_by: editedBy }).eq('id', body.id); if (error) throw error;
+        const next = await fetchOrder(supabase, body.id); await recordHistory(supabase, body.id, orderSnapshot(previous), orderSnapshot(next), body.reason || 'Cancelación de pedido', editedBy);
         return json(200, { order: next });
       }
       if (body.action !== 'edit') return json(400, { error: 'Acción inválida.' });
-      if (!String(body.reason || '').trim()) return json(400, { error: 'Escribe el motivo de la modificación.' });
+      const reason = String(body.reason || '').trim() || 'Edición de ticket desde el panel administrativo';
       if (!TYPES.includes(body.orderType) || !PAYMENTS.includes(body.paymentMethod) || !STATUSES.includes(body.status)) return json(400, { error: 'Tipo, pago o estado inválido.' });
       const cleanItems = normalizeItems(body.items || []); if (!cleanItems.length) return json(400, { error: 'El pedido no puede quedar vacío.' });
-      const subtotal = money(cleanItems.reduce((sum, item) => sum + item.total_price, 0)); const discount = money(body.discountTotal); const total = Math.max(0, money(subtotal - discount));
-      const patch = { customer_name: body.customerName || null, customer_phone: body.customerPhone || null, order_type: body.orderType, payment_method: body.paymentMethod, status: body.paymentMethod === 'plataformas' && body.status !== 'pagado' ? 'pendiente' : body.status, subtotal, discount_total: discount, total, notes: body.notes || null, updated_by: body.editedBy || 'admin' };
+      const subtotal = money(cleanItems.reduce((sum, item) => sum + item.total_price, 0)); const discount = money(body.discountTotal); if (!Number.isFinite(discount) || discount < 0 || discount > subtotal) return json(400, { error: 'El descuento debe estar entre cero y el subtotal.' }); const total = Math.max(0, money(subtotal - discount));
+      const patch = { customer_name: body.customerName || null, customer_phone: body.customerPhone || null, order_type: body.orderType, payment_method: body.paymentMethod, status: body.status, subtotal, discount_total: discount, total, notes: body.notes || null, updated_by: editedBy };
       if (patch.payment_method === 'plataformas' && patch.status === 'pagado' && !previous.paid_at) patch.paid_at = new Date().toISOString();
       if (patch.status !== 'pagado') patch.paid_at = null;
-      const { error: orderError } = await supabase.from('admin_orders').update(patch).eq('id', body.id); if (orderError) throw orderError;
-      const { error: deleteError } = await supabase.from('admin_order_items').delete().eq('order_id', body.id); if (deleteError) throw deleteError;
-      const { error: itemsError } = await supabase.from('admin_order_items').insert(cleanItems.map((item) => ({ ...item, order_id: body.id }))); if (itemsError) throw itemsError;
-      const next = await fetchOrder(supabase, body.id); await recordHistory(supabase, body.id, orderSnapshot(previous), orderSnapshot(next), body.reason, body.editedBy || 'admin');
+      if (patch.status === 'pagado' && !previous.paid_at) patch.paid_at = new Date().toISOString();
+      await saveOrderEdit(supabase, previous, patch, cleanItems);
+      const next = await fetchOrder(supabase, body.id);
+      await recordHistory(supabase, body.id, orderSnapshot(previous), orderSnapshot(next), reason, editedBy);
       return json(200, { order: next });
     }
     if (event.httpMethod !== 'POST') return json(405, { error: 'Método no permitido.' });
     const cleanItems = normalizeItems(Array.isArray(body.items) ? body.items : []); if (!cleanItems.length) return json(400, { error: 'No se puede guardar un pedido vacío.' });
     if (!TYPES.includes(body.orderType) || !PAYMENTS.includes(body.paymentMethod) || !STATUSES.includes(body.status)) return json(400, { error: 'Tipo, pago o estado inválido.' });
-    const subtotal = money(cleanItems.reduce((sum, item) => sum + item.total_price, 0)); const discount = money(body.discountTotal); const status = body.paymentMethod === 'plataformas' ? 'pendiente' : body.status;
+    const subtotal = money(cleanItems.reduce((sum, item) => sum + item.total_price, 0)); const discount = money(body.discountTotal); if (!Number.isFinite(discount) || discount < 0 || discount > subtotal) return json(400, { error: 'El descuento debe estar entre cero y el subtotal.' }); const status = body.paymentMethod === 'plataformas' ? 'pendiente' : body.status;
     const capturedByName = admin.displayName || admin.email || 'Sin identificar';
     const orderPayload = { customer_name: body.customerName || null, customer_phone: body.customerPhone || null, order_type: body.orderType, payment_method: body.paymentMethod, status, paid_at: status === 'pagado' ? new Date().toISOString() : null, subtotal, discount_total: discount, total: Math.max(0, money(subtotal - discount)), notes: body.notes || null, captured_by: capturedByName, captured_by_user_id: admin.userId, captured_by_name: capturedByName, updated_by: capturedByName };
     const { data: order, error } = await insertManualOrder(supabase, orderPayload); if (error) throw error;
@@ -97,3 +100,4 @@ export async function handler(event) {
     return json(201, { order: { ...order, admin_order_items: savedItems } });
   } catch (error) { return json(error.statusCode || 500, { error: error.message || 'Error inesperado en pedidos manuales.' }); }
 }
+

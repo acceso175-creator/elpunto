@@ -286,3 +286,16 @@ Cancelar y volver a imprimir, y repetir tras recargar la pestaña del ticket.
 
 Pruebas automatizadas del ciclo de impresión (sin nuevas dependencias):
 `node --test tests/receipt-print.test.mjs`.
+
+# Actualización de operación del panel
+
+- Al enviar un pedido por WhatsApp, primero se registra en `orders` y `order_items`. Los importes y modificadores se validan en el servidor con productos y plantillas activos.
+- En **Pedidos del portal**, visible en el inicio de admin y en Capturar pedido, el administrador elige el método y estado de pago, confirma y después imprime el ticket. Se actualiza cada 20 segundos. El UUID y folio del pedido se conservan al pasarlo a `admin_orders`, evitando duplicados por reintentos o confirmaciones simultáneas.
+- Confirmar un pedido y recibir el pago son pasos distintos. Un pedido pendiente aparece en el corte; los cobros aumentan cuando se registra como pagado. Los pagos de Stripe se consideran recibidos solo después de la verificación del webhook.
+- Capturar pedido incluye plantillas de combos, selecciones obligatorias y botones para quitar ingredientes. Las observaciones se conservan en el ticket.
+- Editar un ticket guarda también cuando no se escribe un motivo; se registra un motivo automático. Se rechazan versiones desactualizadas. Si falla una escritura se intenta recuperar el ticket anterior y se informa el error.
+- **Imprimir corte** en Corte e Histórico abre el mismo documento independiente de 58 mm usado para tickets. Incluye todos los pedidos consultados, importes, estados y resumen de pagos. Cancelados y cortesías se distinguen del dinero cobrado. Cambiar las fechas requiere actualizar la consulta antes de imprimir o exportar.
+- El día se consulta desde las 00:00 de Chihuahua hasta las 00:00 del día siguiente, con el límite final excluido. Los periodos extensos se consultan por páginas sin truncar las ventas a 5000 registros.
+
+Se reutilizan las tablas existentes de `supabase/orders.sql` y `supabase/admin_orders.sql`; esta actualización no requiere columnas nuevas. Netlify usa Node 24 y ejecuta `npm test` antes de compilar y publicar. La prueba con impresora física queda a cargo del equipo del negocio.
+

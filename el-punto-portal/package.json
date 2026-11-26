@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "node --experimental-test-module-mocks --test tests/*.test.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -16,3 +17,4 @@
     "vite": "latest"
   }
 }
+
